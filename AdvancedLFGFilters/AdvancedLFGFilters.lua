@@ -58,7 +58,7 @@ function FiltersPanelMixin:Setup()
     local nextRelativeTop = self.Bg
     local createSettingContainer  = function(isInitial)
         local container = CreateFrame("Frame", nil, self)
-        container:SetSize(200, 32)
+        container:SetHeight(CHECKBOX_SIZE + 4)
         container:ClearAllPoints()
         container:SetPoint("TOP", nextRelativeTop, isInitial and "TOP" or "BOTTOM", 0, isInitial and -20 or -5)
         container:SetPoint("LEFT", self.Bg, "LEFT", 5, 0)
@@ -87,6 +87,36 @@ function FiltersPanelMixin:Setup()
         Label:SetScript("OnLeave", GenerateClosure(manageHighlight, false))
         Checkbox.Label = Label
         return Checkbox
+    end
+    local addInputRangeWidget = function(container, setting)
+        ---@param settingKey "Minimum"|"Maximum"
+        local createInputBox = function(settingKey)
+            local input = CreateFrame("EditBox", nil, container, "InputBoxTemplate")
+            input:SetSize(CHECKBOX_SIZE + 4, CHECKBOX_SIZE)
+            input:SetNumeric(true); input:SetMaxLetters(2)
+            input:SetAutoFocus(false)
+            input.Left:SetHeight(24);
+            input.Right:SetHeight(24);
+            input.Middle:SetHeight(24);
+            input:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+            input:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+            input:SetScript("OnEditFocusLost", function(self)
+                setting[settingKey] = tonumber(self:GetText());
+                self:SetText(setting[settingKey] or "");
+            end)
+            input:SetScript("OnEditFocusGained", function(self) self:HighlightText() end)
+            input:SetText(setting[settingKey] or "")
+            return input
+        end
+        local MinInput, MaxInput = createInputBox("Minimum"), createInputBox("Maximum")
+        local Separator = container:CreateFontString(nil, "ARTWORK", "GameFontNormal");
+        Separator:SetText(strtrim(BATTLE_PET_VARIANCE_STR:gsub("%%s", ""))) -- "To"
+        Separator:SetWidth(24)
+        --- [Min] to [Max]
+        -- MinInput:SetPoint("LEFT", Checkbox.Label, "RIGHT", 15, 0) -- do after
+        Separator:SetPoint("LEFT", MinInput, "RIGHT", 0, 0)
+        MaxInput:SetPoint("LEFT", Separator, "RIGHT", MaxInput.Left:GetWidth()/2, 0)
+        return MinInput, MaxInput
     end
     do -- Classes Filter
         local setting = Addon.accountDB.ClassFilters
@@ -137,6 +167,14 @@ function FiltersPanelMixin:Setup()
         end)
         nextRelativeTop = container
     end
+    do -- Number of Members
+        local container = createSettingContainer()
+        local setting = Addon.accountDB.MemberCounts
+        local Checkbox = addCheckboxWidget(container, MEMBERS, setting)
+        local MinInput, MaxInput = addInputRangeWidget(container, setting)
+        MinInput:SetPoint("LEFT", Checkbox.Label, "RIGHT", 15, 0)
+        nextRelativeTop = container
+    end
 end
 function Addon:ADDON_LOADED()
     self:InitSavedVars()
@@ -156,6 +194,11 @@ function Addon:InitSavedVars()
     ---Entries either describe the shape or are a default value
     ---@class Addon_AccountDB
     local validationTable = {
+        MemberCounts = {
+            Enabled = false,
+            Minimum = nil, ---@type number?
+            Maximum = nil, ---@type number?
+        };
         ClassFilters = {
             Enabled = false,
             ---@type {[number]: boolean}
