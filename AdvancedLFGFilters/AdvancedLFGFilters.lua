@@ -5,6 +5,14 @@ local TOC_NAME,
 ---@class Addon_EventFrame: EventFrame
 local EventFrame = CreateFrame("EventFrame", TOC_NAME.."EventFrame", UIParent)
 
+local CHECKBOX_SIZE = 28
+local isPlayerHorde = UnitFactionGroup("player") == "Horde"
+local isClassicEra = WOW_PROJECT_ID == WOW_PROJECT_CLASSIC
+local isSeasonOfDiscovery = C_Seasons.GetActiveSeason() == Enum.SeasonID.SeasonOfDiscovery
+local isBurningCrusade = WOW_PROJECT_ID == WOW_PROJECT_BURNING_CRUSADE_CLASSIC
+local isWrath = WOW_PROJECT_ID == WOW_PROJECT_WRATH_CLASSIC
+local isCataclysm = WOW_PROJECT_ID == WOW_PROJECT_CATACLYSM_CLASSIC
+
 local ShowHideAddonButtonMixin = {}
 function ShowHideAddonButtonMixin:Setup()
     ---@cast self Button|{LeftSeparator:Texture, RightSeparator:Texture}
@@ -45,6 +53,91 @@ function ShowHideAddonButtonMixin:OnButtonStateChanged()
     end
 end
 
+local FiltersPanelMixin = {}
+function FiltersPanelMixin:Setup()
+    local nextRelativeTop = self.Bg
+    local createSettingContainer  = function(isInitial)
+        local container = CreateFrame("Frame", nil, self)
+        container:SetSize(200, 32)
+        container:ClearAllPoints()
+        container:SetPoint("TOP", nextRelativeTop, isInitial and "TOP" or "BOTTOM", 0, isInitial and -20 or -5)
+        container:SetPoint("LEFT", self.Bg, "LEFT", 5, 0)
+        container:SetPoint("RIGHT", self.Bg, "RIGHT", -5, 0)
+        return container
+    end
+    local addCheckboxWidget = function(container, label, setting)
+        local Checkbox = CreateFrame("CheckButton", nil, container, "SettingsCheckboxTemplate")
+        Checkbox:SetPoint("LEFT")
+        Checkbox:SetSize(CHECKBOX_SIZE, CHECKBOX_SIZE)
+        Checkbox:RegisterCallback("OnValueChanged", function(_, value)
+            setting.Enabled = value;
+        end)
+        Checkbox:Init(setting.Enabled)
+        Checkbox.HoverBackground:SetAllPoints(container)
+        local Label = container:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+        Label:SetText(label)
+        Label:SetPoint("LEFT", Checkbox, "RIGHT", 5, -1)
+        Label:EnableMouse(true)
+        Label:SetScript("OnMouseUp", function() if Checkbox:IsEnabled() then Checkbox:Click() end end)
+        local manageHighlight = function(isMouseOver)
+            if not Checkbox:IsEnabled() then return end
+            Checkbox.HoverBackground:SetShown(isMouseOver)
+        end
+        Label:SetScript("OnEnter", GenerateClosure(manageHighlight, true))
+        Label:SetScript("OnLeave", GenerateClosure(manageHighlight, false))
+        Checkbox.Label = Label
+        return Checkbox
+    end
+    do -- Classes Filter
+        local setting = Addon.accountDB.ClassFilters
+        local container = createSettingContainer(true)
+        local Checkbox = addCheckboxWidget(container, "Filter by Class", setting)
+        local FilterDropdown = CreateFrame("DropdownButton", nil, container, "WowStyle1FilterDropdownTemplate")
+        FilterDropdown:SetPoint("LEFT", Checkbox.Label, "RIGHT", 15, 0)
+        FilterDropdown.text = CLASS; FilterDropdown.resizeToText = true;
+        local selectedIds = Addon.accountDB.ClassFilters.SelectedByClassID
+        for classID = 1, GetNumClasses() do
+            if (classID == 10) and (GetClassicExpansionLevel() <= LE_EXPANSION_CATACLYSM) then
+				classID = 11; -- fix gap between warlock and druid in pre mop xpacs
+			end
+            selectedIds[classID] = selectedIds[classID] or false
+        end
+        local setSelected = function(classID) selectedIds[classID] = not selectedIds[classID] end;
+        local isSelected = function(classID) return selectedIds[classID] end
+        local isAllSelected = function()
+            for _, isSelected in pairs(selectedIds) do
+                if not isSelected then return false end
+            end
+            return true
+        end
+        local setAllSelected = function()
+            local newState = not isAllSelected();
+            for classID, _ in pairs(selectedIds) do selectedIds[classID] = newState end
+        end
+        local setupClassFilter = function(rootDescription, classInfo)
+            if not classInfo then return; end
+            if isClassicEra
+                and ((not isPlayerHorde and classInfo.classFile == "SHAMAN")
+                or (isPlayerHorde and classInfo.classFile == "PALADIN"))
+            then selectedIds[classInfo.classID] = nil; return; end
+            local displayStr = classInfo.className
+            local color = (CUSTOM_CLASS_COLORS and CUSTOM_CLASS_COLORS[classInfo.classFile])
+                        or (RAID_CLASS_COLORS and RAID_CLASS_COLORS[classInfo.classFile]);
+            local displayStr = color and color:WrapTextInColorCode(displayStr) or displayStr;
+            displayStr = "  "..displayStr
+            rootDescription:CreateCheckbox(displayStr, isSelected, setSelected, classInfo.classID);
+        end
+        FilterDropdown:SetupMenu(function(_, rootDescription)
+            ---@cast rootDescription RootMenuDescriptionProxy
+            rootDescription:SetTag("ADV_LFG_CLASS_FILTER")
+            rootDescription:CreateCheckbox(ALL_CLASSES, isAllSelected, setAllSelected)
+            for classID, _ in pairs(selectedIds) do
+                setupClassFilter(rootDescription, C_CreatureInfo.GetClassInfo(classID))
+            end
+        end)
+        nextRelativeTop = container
+    end
+end
 function Addon:ADDON_LOADED()
     self:InitSavedVars()
     self:InitUIPanel()
@@ -60,12 +153,59 @@ EventFrame:SetScript("OnEvent", function(_, event, addon)
 end)
 
 function Addon:InitSavedVars()
+    ---Entries either describe the shape or are a default value
+    ---@class Addon_AccountDB
+    local validationTable = {
+        ClassFilters = {
+            Enabled = false,
+            ---@type {[number]: boolean}
+            SelectedByClassID = {
+                key = "number",
+                value = "boolean",
+                nullable = false,
+            },
+        }
+    }
     local accountDB = _G[TOC_NAME.."DB"]
     if not accountDB then
         accountDB = {}
         _G[TOC_NAME.."DB"] = accountDB
     end
-    self.accountDB = accountDB
+    local function validateSavedVar(db, dbKey, validator)
+        local validatorType = type(validator)
+        local dbEntry = db[dbKey]
+        if validatorType == "table" then
+            if not dbEntry then db[dbKey] = {}; dbEntry = db[dbKey] end
+            if not validator.value then -- not a base validator table. recurse
+                for key, nestedValidator in pairs(validator) do
+                    validateSavedVar(dbEntry, key, nestedValidator)
+                end
+            else
+                for key, value in pairs(dbEntry) do
+                    if type(key) ~= validator.key then
+                        dbEntry[key] = nil
+                    elseif type(value) ~= validator.value then
+                        dbEntry[key] = nil
+                    end
+                end
+            end
+        else
+            --- note: also handles nil'ing deprecated keys when validator == nil
+            if validatorType == "nil" then print("Removing deprecated setting "..dbKey) end
+            if type(dbEntry) ~= validatorType then db[dbKey] = validator end
+        end
+    end
+    -- Fill in missing entries
+    for name, validator in pairs(validationTable) do
+        validateSavedVar(accountDB, name, validator)
+    end
+    --- Removes deprecated entries
+    for key, _ in pairs(accountDB) do
+        if not validationTable[key] then accountDB[key] = nil;
+        else validateSavedVar(accountDB, key, validationTable[key]) end
+    end
+
+    self.accountDB = accountDB; ---@type Addon_AccountDB
 end
 
 function Addon:InitUIPanel()
@@ -95,6 +235,7 @@ function Addon:InitUIPanel()
         panel:SetTitleOffsets(0, nil)
         panel.Bg:SetTexture("Interface\\FrameGeneral\\UI-Background-Marble");
         panel.Bg:SetVertTile(false); panel.Bg:SetHorizTile(false);
+        FiltersPanelMixin.Setup(panel)
         ShowHideAddonButtonMixin.Setup(panelToggle)
         local updateButton = GenerateClosure(ShowHideAddonButtonMixin.OnButtonStateChanged, panelToggle)
         panel:HookScript("OnShow", updateButton); panel:HookScript("OnHide", updateButton)
