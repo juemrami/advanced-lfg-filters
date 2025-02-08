@@ -56,15 +56,23 @@ end
 local FiltersPanelMixin = {}
 function FiltersPanelMixin:Setup()
     local nextRelativeTop = self.Bg
-    local createSettingContainer  = function(isInitial)
+    local createSettingContainer  = function(xOffset, yOffset)
         local container = CreateFrame("Frame", nil, self)
         container:SetHeight(CHECKBOX_SIZE + 4)
         container:ClearAllPoints()
-        container:SetPoint("TOP", nextRelativeTop, isInitial and "TOP" or "BOTTOM", 0, isInitial and -20 or -5)
+        container:SetPoint("TOP", nextRelativeTop, "BOTTOM", xOffset or 0, yOffset or -5)
         container:SetPoint("LEFT", self.Bg, "LEFT", 5, 0)
         container:SetPoint("RIGHT", self.Bg, "RIGHT", -5, 0)
         return container
     end
+    local addHeaderFontString = function(container, text)
+        local Header = container:CreateFontString(nil, "ARTWORK", "GameFontNormalMed2")
+        Header:SetText(text)
+        Header:SetPoint("TOPLEFT", container, "TOPLEFT", 0, 0)
+        container:SetHeight(Header:GetHeight())
+        return Header
+    end
+    local maxCheckboxLabelWith = 0;
     local addCheckboxWidget = function(container, label, setting)
         local Checkbox = CreateFrame("CheckButton", nil, container, "SettingsCheckboxTemplate")
         Checkbox:SetPoint("LEFT")
@@ -75,7 +83,20 @@ function FiltersPanelMixin:Setup()
         Checkbox:Init(setting.Enabled)
         Checkbox.HoverBackground:SetAllPoints(container)
         local Label = container:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+        Mixin(Label, CallbackRegistryMixin);
+        Label:OnLoad()
+        Label:GenerateCallbackEvents({"MaxLabelWidthChanged"})
+        Label:SetJustifyH("LEFT")
         Label:SetText(label)
+        local labelWidth = Label:GetWidth()
+        Label:RegisterCallback("MaxLabelWidthChanged", function(_, newMaxWidth)
+            Label:SetWidth(newMaxWidth)
+        end)
+        if labelWidth > maxCheckboxLabelWith then
+            maxCheckboxLabelWith = labelWidth
+            Label:TriggerEvent("MaxLabelWidthChanged", maxCheckboxLabelWith)
+        end
+        Label:SetWidth(maxCheckboxLabelWith)
         Label:SetPoint("LEFT", Checkbox, "RIGHT", 5, -1)
         Label:EnableMouse(true)
         Label:SetScript("OnMouseUp", function() if Checkbox:IsEnabled() then Checkbox:Click() end end)
@@ -101,8 +122,14 @@ function FiltersPanelMixin:Setup()
             input:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
             input:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
             input:SetScript("OnEditFocusLost", function(self)
-                setting[settingKey] = tonumber(self:GetText());
-                self:SetText(setting[settingKey] or "");
+                local input = tonumber(self:GetText());
+                if not input then setting[settingKey] = nil; self:SetText(""); return; end
+                if settingKey == "Minimum" then
+                    setting[settingKey] = math.min(input, setting.Maximum or input)
+                else
+                    setting[settingKey] = math.max(input, setting.Minimum or input)
+                end
+                self:SetText(setting[settingKey]);
             end)
             input:SetScript("OnEditFocusGained", function(self) self:HighlightText() end)
             input:SetText(setting[settingKey] or "")
@@ -118,10 +145,17 @@ function FiltersPanelMixin:Setup()
         MaxInput:SetPoint("LEFT", Separator, "RIGHT", MaxInput.Left:GetWidth()/2, 0)
         return MinInput, MaxInput
     end
+    do -- Applicants header
+        local container = createSettingContainer()
+        container:SetPoint("TOP", nextRelativeTop, "TOP", 0, -12)
+        addHeaderFontString(container, CLUB_FINDER_APPLICANTS)
+        nextRelativeTop = container
+    end
     do -- Classes Filter
         local setting = Addon.accountDB.ClassFilters
-        local container = createSettingContainer(true)
+        local container = createSettingContainer()
         local Checkbox = addCheckboxWidget(container, "Filter by Class", setting)
+        Checkbox.Label:UnregisterEvents(); -- do not auto resize this label.
         local FilterDropdown = CreateFrame("DropdownButton", nil, container, "WowStyle1FilterDropdownTemplate")
         FilterDropdown:SetPoint("LEFT", Checkbox.Label, "RIGHT", 15, 0)
         FilterDropdown.text = CLASS; FilterDropdown.resizeToText = true;
@@ -167,12 +201,43 @@ function FiltersPanelMixin:Setup()
         end)
         nextRelativeTop = container
     end
+    do -- Premade Groups header
+        local container = createSettingContainer(0, -12)
+        addHeaderFontString(container, LFGLIST_NAME)
+        nextRelativeTop = container
+    end
+    maxCheckboxLabelWith = 0; -- reset max for the next set of filter labels
+    local labelRightPadding = 20
     do -- Number of Members
         local container = createSettingContainer()
         local setting = Addon.accountDB.MemberCounts
         local Checkbox = addCheckboxWidget(container, MEMBERS, setting)
         local MinInput, MaxInput = addInputRangeWidget(container, setting)
-        MinInput:SetPoint("LEFT", Checkbox.Label, "RIGHT", 15, 0)
+        MinInput:SetPoint("LEFT", Checkbox.Label, "RIGHT", labelRightPadding, 0)
+        nextRelativeTop = container
+    end
+    do -- Number of tanks
+        local container = createSettingContainer()
+        local setting = Addon.accountDB.TankCounts
+        local Checkbox = addCheckboxWidget(container, "Tanks", setting)
+        local MinInput, _ = addInputRangeWidget(container, setting)
+        MinInput:SetPoint("LEFT", Checkbox.Label, "RIGHT", labelRightPadding, 0)
+        nextRelativeTop = container
+    end
+    do -- Number of heals
+        local container = createSettingContainer()
+        local setting = Addon.accountDB.HealerCounts
+        local Checkbox = addCheckboxWidget(container, "Healers", setting)
+        local MinInput, _ = addInputRangeWidget(container, setting)
+        MinInput:SetPoint("LEFT", Checkbox.Label, "RIGHT", labelRightPadding, 0)
+        nextRelativeTop = container
+    end
+    do -- Number of Dps
+        local container = createSettingContainer()
+        local setting = Addon.accountDB.DamagerCounts
+        local Checkbox = addCheckboxWidget(container, "DPS", setting)
+        local MinInput, _ = addInputRangeWidget(container, setting)
+        MinInput:SetPoint("LEFT", Checkbox.Label, "RIGHT", labelRightPadding, 0)
         nextRelativeTop = container
     end
 end
@@ -199,6 +264,9 @@ function Addon:InitSavedVars()
             Minimum = nil, ---@type number?
             Maximum = nil, ---@type number?
         };
+        TankCounts = { Enabled = false, Minimum = nil, Maximum = nil},
+        HealerCounts = { Enabled = false, Minimum = nil, Maximum = nil},
+        DamagerCounts = { Enabled = false, Minimum = nil, Maximum = nil},
         ClassFilters = {
             Enabled = false,
             ---@type {[number]: boolean}
