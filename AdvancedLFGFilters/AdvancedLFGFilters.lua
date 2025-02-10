@@ -7,6 +7,8 @@ local EventFrame = CreateFrame("EventFrame", TOC_NAME.."EventFrame", UIParent)
 
 local L = { -- todo: some actual translations for missing pre-localized strings
     SELECTED_CLASSES = "Selected Classes",
+    SHOW_APPLICANTS = "Show Applicants",
+    SHOW_PREMADE_GROUPS = "Show Premade Groups",
 }
 local CLASS_FILE_BY_ID = {
     [1] = "WARRIOR", [2] = "PALADIN", [3] = "HUNTER", [4] = "ROGUE",
@@ -26,31 +28,35 @@ local ShouldFilterForResultID = function(resultID)
     local resultData = C_LFGList.GetSearchResultInfo(resultID)
     if not resultData then return false end
     if resultData.numMembers == 1 then -- applicant
+        local applicants = Addon.accountDB.Applicants
+        if not applicants.Enabled then return false end
         local applicant = C_LFGList.GetSearchResultLeaderInfo(resultID)
-        if Addon.accountDB.ClassFilters.Enabled then
+        if applicants.ClassFilters.Enabled then
             local classID = CLASS_ID_BY_FILE[applicant.classFilename]
-            if not Addon.accountDB.ClassFilters.SelectedByClassID[classID] then return false end
+            if not applicants.ClassFilters.SelectedByClassID[classID] then return false end
         end
     else -- premade group
+        local premadeGroups = Addon.accountDB.PremadeGroups
+        if not premadeGroups.Enabled then return false end
         local numMembers = resultData.numMembers
-        if Addon.accountDB.MemberCounts.Enabled then
-            local setting = Addon.accountDB.MemberCounts
+        if premadeGroups.MemberCounts.Enabled then
+            local setting = premadeGroups.MemberCounts
             if setting.Minimum and numMembers < setting.Minimum then return false end
             if setting.Maximum and numMembers > setting.Maximum then return false end
         end
         local roleCounts = C_LFGList.GetSearchResultMemberCounts(resultID)
-        if Addon.accountDB.TankCounts.Enabled then
-            local setting = Addon.accountDB.TankCounts
+        if premadeGroups.TankCounts.Enabled then
+            local setting = premadeGroups.TankCounts
             if setting.Minimum and roleCounts.TANK < setting.Minimum then return false end
             if setting.Maximum and roleCounts.TANK > setting.Maximum then return false end
         end
-        if Addon.accountDB.HealerCounts.Enabled then
-            local setting = Addon.accountDB.HealerCounts
+        if premadeGroups.HealerCounts.Enabled then
+            local setting = premadeGroups.HealerCounts
             if setting.Minimum and roleCounts.HEALER < setting.Minimum then return false end
             if setting.Maximum and roleCounts.HEALER > setting.Maximum then return false end
         end
-        if Addon.accountDB.DamagerCounts.Enabled then
-            local setting = Addon.accountDB.DamagerCounts
+        if premadeGroups.DamagerCounts.Enabled then
+            local setting = premadeGroups.DamagerCounts
             if setting.Minimum and roleCounts.DAMAGER < setting.Minimum then return false end
             if setting.Maximum and roleCounts.DAMAGER > setting.Maximum then return false end
         end
@@ -163,11 +169,12 @@ function FiltersPanelMixin:Setup()
         local Checkbox = CreateFrame("CheckButton", nil, container, "SettingsCheckboxTemplate")
         Checkbox:SetPoint("LEFT")
         Checkbox:SetSize(CHECKBOX_SIZE, CHECKBOX_SIZE)
+        local useSetting = setting and type(setting) == "table"
         Checkbox:RegisterCallback("OnValueChanged", function(_, value)
-            setting.Enabled = value;
+            if useSetting then setting.Enabled = value; end;
             LFGListHookModule.UpdateResultList()
         end)
-        Checkbox:Init(setting.Enabled)
+        if useSetting then Checkbox:Init(setting and setting.Enabled or nil) end;
         Checkbox:HookScript("OnClick", GenerateClosure(PlaySound, SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON));
         Checkbox.HoverBackground:SetAllPoints(container)
         local Label = container:CreateFontString(nil, "ARTWORK", "GameFontNormal")
@@ -240,8 +247,14 @@ function FiltersPanelMixin:Setup()
         addHeaderFontString(container, CLUB_FINDER_APPLICANTS)
         nextRelativeTop = container
     end
+    do -- Show Applicants Toggle
+        local container = createSettingContainer()
+        addCheckboxWidget(container, L.SHOW_APPLICANTS, Addon.accountDB.Applicants)
+        maxCheckboxLabelWith = 0; -- don't track width for this checkbox label
+        nextRelativeTop = container
+    end
     do -- Classes Filter
-        local setting = Addon.accountDB.ClassFilters
+        local setting = Addon.accountDB.Applicants.ClassFilters
         local container = createSettingContainer()
         local Checkbox = addCheckboxWidget(container, "Filter by Class", setting)
         Checkbox.Label:UnregisterEvents(); -- do not auto resize this label.
@@ -262,7 +275,7 @@ function FiltersPanelMixin:Setup()
             FilterDropdown:SetEnabled(not not value);
         end)
         FilterDropdown:SetEnabled(setting.Enabled)
-        local selectedIds = Addon.accountDB.ClassFilters.SelectedByClassID
+        local selectedIds = Addon.accountDB.Applicants.ClassFilters.SelectedByClassID
         for _, id in pairs(CLASS_ID_BY_FILE) do selectedIds[id] = selectedIds[id] or false; end;
         local setSelected = function(classID) selectedIds[classID] = not selectedIds[classID] end;
         local isSelected = function(classID) return selectedIds[classID] end
@@ -337,11 +350,16 @@ function FiltersPanelMixin:Setup()
         addHeaderFontString(container, LFGLIST_NAME)
         nextRelativeTop = container
     end
-    maxCheckboxLabelWith = 0; -- reset max for the next set of filter labels
+    do -- Show Premade Groups Toggle
+        local container = createSettingContainer()
+        addCheckboxWidget(container, L.SHOW_PREMADE_GROUPS, Addon.accountDB.PremadeGroups)
+        nextRelativeTop = container
+    end
+    maxCheckboxLabelWith = 0; -- reset. Don't match widths for previous checkbox labels
     local labelRightPadding = 20
     do -- Number of Members
         local container = createSettingContainer()
-        local setting = Addon.accountDB.MemberCounts
+        local setting = Addon.accountDB.PremadeGroups.MemberCounts
         local Checkbox = addCheckboxWidget(container, MEMBERS, setting)
         local MinInput, MaxInput = addInputRangeWidget(container, setting)
         MinInput:SetPoint("LEFT", Checkbox.Label, "RIGHT", labelRightPadding, 0)
@@ -349,7 +367,7 @@ function FiltersPanelMixin:Setup()
     end
     do -- Number of tanks
         local container = createSettingContainer()
-        local setting = Addon.accountDB.TankCounts
+        local setting = Addon.accountDB.PremadeGroups.TankCounts
         local Checkbox = addCheckboxWidget(container, "Tanks", setting)
         local MinInput, _ = addInputRangeWidget(container, setting)
         MinInput:SetPoint("LEFT", Checkbox.Label, "RIGHT", labelRightPadding, 0)
@@ -357,7 +375,7 @@ function FiltersPanelMixin:Setup()
     end
     do -- Number of heals
         local container = createSettingContainer()
-        local setting = Addon.accountDB.HealerCounts
+        local setting = Addon.accountDB.PremadeGroups.HealerCounts
         local Checkbox = addCheckboxWidget(container, "Healers", setting)
         local MinInput, _ = addInputRangeWidget(container, setting)
         MinInput:SetPoint("LEFT", Checkbox.Label, "RIGHT", labelRightPadding, 0)
@@ -365,7 +383,7 @@ function FiltersPanelMixin:Setup()
     end
     do -- Number of Dps
         local container = createSettingContainer()
-        local setting = Addon.accountDB.DamagerCounts
+        local setting = Addon.accountDB.PremadeGroups.DamagerCounts
         local Checkbox = addCheckboxWidget(container, "DPS", setting)
         local MinInput, _ = addInputRangeWidget(container, setting)
         MinInput:SetPoint("LEFT", Checkbox.Label, "RIGHT", labelRightPadding, 0)
@@ -391,23 +409,29 @@ function Addon:InitSavedVars()
     ---Entries either describe the shape or are a default value
     ---@class Addon_AccountDB
     local validationTable = {
-        MemberCounts = {
-            Enabled = false,
-            Minimum = nil, ---@type number?
-            Maximum = nil, ---@type number?
-        };
-        TankCounts = { Enabled = false, Minimum = nil, Maximum = nil},
-        HealerCounts = { Enabled = false, Minimum = nil, Maximum = nil},
-        DamagerCounts = { Enabled = false, Minimum = nil, Maximum = nil},
-        ClassFilters = {
-            Enabled = false,
-            ---@type {[number]: boolean}
-            SelectedByClassID = {
-                key = "number",
-                value = "boolean",
-                nullable = false,
-            },
-        }
+        PremadeGroups = {
+            Enabled = true,
+            MemberCounts = {
+                Enabled = false,
+                Minimum = nil, ---@type number?
+                Maximum = nil, ---@type number?
+            };
+            TankCounts = { Enabled = false, Minimum = nil, Maximum = nil},
+            HealerCounts = { Enabled = false, Minimum = nil, Maximum = nil},
+            DamagerCounts = { Enabled = false, Minimum = nil, Maximum = nil},
+        },
+        Applicants = {
+            Enabled = true,
+            ClassFilters = {
+                Enabled = false,
+                ---@type {[number]: boolean}
+                SelectedByClassID = {
+                    key = "number",
+                    value = "boolean",
+                    nullable = false,
+                },
+            }
+        },
     }
     local accountDB = _G[TOC_NAME.."DB"]
     if not accountDB then
