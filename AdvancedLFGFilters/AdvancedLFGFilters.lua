@@ -5,6 +5,9 @@ local TOC_NAME,
 ---@class Addon_EventFrame: EventFrame
 local EventFrame = CreateFrame("EventFrame", TOC_NAME.."EventFrame", UIParent)
 
+local L = { -- todo: some actual translations for missing pre-localized strings
+    SELECTED_CLASSES = "Selected Classes",
+}
 local CLASS_FILE_BY_ID = {
     [1] = "WARRIOR", [2] = "PALADIN", [3] = "HUNTER", [4] = "ROGUE",
     [5] = "PRIEST", [6] = "DEATHKNIGHT", [7] = "SHAMAN", [8] = "MAGE",
@@ -53,6 +56,16 @@ local ShouldFilterForResultID = function(resultID)
         end
     end
     return true
+end
+
+local GetColoredClassNameByID = function(classID, useDisabledColor)
+    local classInfo = C_CreatureInfo.GetClassInfo(classID)
+    assert(classInfo, "classInfo not found for classID: ", classID)
+    local color =  (useDisabledColor and DISABLED_FONT_COLOR)
+                or (CUSTOM_CLASS_COLORS and CUSTOM_CLASS_COLORS[classInfo.classFile])
+                or (RAID_CLASS_COLORS and RAID_CLASS_COLORS[classInfo.classFile]);
+    local displayStr = color and color:WrapTextInColorCode(classInfo.className) or classInfo.className;
+    return displayStr
 end
 
 --- Inplace sort, Only using default blizzard one for now
@@ -233,8 +246,22 @@ function FiltersPanelMixin:Setup()
         local Checkbox = addCheckboxWidget(container, "Filter by Class", setting)
         Checkbox.Label:UnregisterEvents(); -- do not auto resize this label.
         local FilterDropdown = CreateFrame("DropdownButton", nil, container, "WowStyle1FilterDropdownTemplate")
-        FilterDropdown:SetPoint("LEFT", Checkbox.Label, "RIGHT", 15, 0)
-        FilterDropdown.text = CLASS; FilterDropdown.resizeToText = true;
+        FilterDropdown:SetPoint("LEFT", Checkbox.Label, "RIGHT", 10, 0)
+        Mixin(FilterDropdown, DropdownSelectionTextMixin)
+        DropdownSelectionTextMixin.OnLoad(FilterDropdown)
+        FilterDropdown:SetScript("OnEnter", DropdownSelectionTextMixin.OnEnter)
+        FilterDropdown:SetScript("OnLeave", DropdownSelectionTextMixin.OnLeave)
+        FilterDropdown.Text:ClearAllPoints()
+        FilterDropdown.Text:SetPoint("TOPLEFT", FilterDropdown, "TOPLEFT", 10, -2)
+        FilterDropdown.Text:SetPoint("BOTTOMRIGHT", FilterDropdown, "BOTTOMRIGHT", -20, 2)
+        FilterDropdown.Text:SetJustifyH("CENTER")
+        FilterDropdown.resizeToTextMinWidth = 105;
+        FilterDropdown.resizeToTextMaxWidth = 105;
+        FilterDropdown.resizeToTextPadding = 0;
+        Checkbox:RegisterCallback("OnValueChanged", function(_, value)
+            FilterDropdown:SetEnabled(not not value);
+        end)
+        FilterDropdown:SetEnabled(setting.Enabled)
         local selectedIds = Addon.accountDB.ClassFilters.SelectedByClassID
         for _, id in pairs(CLASS_ID_BY_FILE) do selectedIds[id] = selectedIds[id] or false; end;
         local setSelected = function(classID) selectedIds[classID] = not selectedIds[classID] end;
@@ -262,13 +289,39 @@ function FiltersPanelMixin:Setup()
                 and ((not isPlayerHorde and classInfo.classFile == "SHAMAN")
                 or (isPlayerHorde and classInfo.classFile == "PALADIN"))
             then selectedIds[classInfo.classID] = nil; return; end
-            local displayStr = classInfo.className
-            local color = (CUSTOM_CLASS_COLORS and CUSTOM_CLASS_COLORS[classInfo.classFile])
-                        or (RAID_CLASS_COLORS and RAID_CLASS_COLORS[classInfo.classFile]);
-            local displayStr = color and color:WrapTextInColorCode(displayStr) or displayStr;
-            displayStr = "  "..displayStr
+            local displayStr = "  " .. GetColoredClassNameByID(classInfo.classID)
             rootDescription:CreateCheckbox(displayStr, isSelected, setSelected, classInfo.classID);
         end
+        FilterDropdown:SetSelectionText(function(selections)
+            FilterDropdown:SetTooltip(nil)
+            local count = #selections
+            local isDisabled = not FilterDropdown:IsEnabled()
+            local WrapOnDisabled = function(text)
+                if not isDisabled then return text end
+                return DISABLED_FONT_COLOR:WrapTextInColorCode(text);
+            end
+            if count == 0 then return WrapOnDisabled(NONE) end
+            if isAllSelected() then return WrapOnDisabled(ALL_CLASSES) end
+            local classID = selections[1].data
+            local classStr = GetColoredClassNameByID(classID, isDisabled)
+            --- only setup tooltip when more than 1 class is selected
+            if count > 1 then
+                FilterDropdown:SetTooltip(function(tooltip)
+                    if FilterDropdown:IsMenuOpen() then return end
+                    tooltip:SetOwner(FilterDropdown, "ANCHOR_BOTTOMRIGHT", 4, FilterDropdown.Background:GetHeight())
+                    GameTooltip_SetTitle(tooltip, L.SELECTED_CLASSES, NORMAL_FONT_COLOR)
+                    for _, selection in ipairs(selections) do
+                        GameTooltip_AddNormalLine(tooltip, selection.text)
+                    end
+                end)
+                return WrapOnDisabled(("%s +%s"):format(classStr, count - 1))
+            else return classStr end
+        end)
+        function FilterDropdown:OnButtonStateChanged()
+            WowStyle1FilterDropdownMixin.OnButtonStateChanged(self)
+            FilterDropdown:SignalUpdate()
+        end
+        FilterDropdown:HookScript("OnMouseDown", GameTooltip_Hide)
         FilterDropdown:SetupMenu(function(_, rootDescription)
             ---@cast rootDescription RootMenuDescriptionProxy
             rootDescription:SetTag("ADV_LFG_CLASS_FILTER")
