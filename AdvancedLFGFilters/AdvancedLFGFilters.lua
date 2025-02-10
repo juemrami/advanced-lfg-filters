@@ -5,6 +5,12 @@ local TOC_NAME,
 ---@class Addon_EventFrame: EventFrame
 local EventFrame = CreateFrame("EventFrame", TOC_NAME.."EventFrame", UIParent)
 
+local CLASS_FILE_BY_ID = {
+    [1] = "WARRIOR", [2] = "PALADIN", [3] = "HUNTER", [4] = "ROGUE",
+    [5] = "PRIEST", [6] = "DEATHKNIGHT", [7] = "SHAMAN", [8] = "MAGE",
+    [9] = "WARLOCK", [10] = "MONK", [11] = "DRUID",
+};
+local CLASS_ID_BY_FILE = tInvert(CLASS_FILE_BY_ID)
 local CHECKBOX_SIZE = 28
 local isPlayerHorde = UnitFactionGroup("player") == "Horde"
 local isClassicEra = WOW_PROJECT_ID == WOW_PROJECT_CLASSIC
@@ -12,6 +18,73 @@ local isSeasonOfDiscovery = C_Seasons.GetActiveSeason() == Enum.SeasonID.SeasonO
 local isBurningCrusade = WOW_PROJECT_ID == WOW_PROJECT_BURNING_CRUSADE_CLASSIC
 local isWrath = WOW_PROJECT_ID == WOW_PROJECT_WRATH_CLASSIC
 local isCataclysm = WOW_PROJECT_ID == WOW_PROJECT_CATACLYSM_CLASSIC
+
+local ShouldFilterForResultID = function(resultID)
+    local resultData = C_LFGList.GetSearchResultInfo(resultID)
+    if not resultData then return false end
+    if resultData.numMembers == 1 then -- applicant
+        local applicant = C_LFGList.GetSearchResultLeaderInfo(resultID)
+        if Addon.accountDB.ClassFilters.Enabled then
+            local classID = CLASS_ID_BY_FILE[applicant.classFilename]
+            if not Addon.accountDB.ClassFilters.SelectedByClassID[classID] then return false end
+        end
+    else -- premade group
+        local numMembers = resultData.numMembers
+        if Addon.accountDB.MemberCounts.Enabled then
+            local setting = Addon.accountDB.MemberCounts
+            if setting.Minimum and numMembers < setting.Minimum then return false end
+            if setting.Maximum and numMembers > setting.Maximum then return false end
+        end
+        local roleCounts = C_LFGList.GetSearchResultMemberCounts(resultID)
+        if Addon.accountDB.TankCounts.Enabled then
+            local setting = Addon.accountDB.TankCounts
+            if setting.Minimum and roleCounts.TANK < setting.Minimum then return false end
+            if setting.Maximum and roleCounts.TANK > setting.Maximum then return false end
+        end
+        if Addon.accountDB.HealerCounts.Enabled then
+            local setting = Addon.accountDB.HealerCounts
+            if setting.Minimum and roleCounts.HEALER < setting.Minimum then return false end
+            if setting.Maximum and roleCounts.HEALER > setting.Maximum then return false end
+        end
+        if Addon.accountDB.DamagerCounts.Enabled then
+            local setting = Addon.accountDB.DamagerCounts
+            if setting.Minimum and roleCounts.DAMAGER < setting.Minimum then return false end
+            if setting.Maximum and roleCounts.DAMAGER > setting.Maximum then return false end
+        end
+    end
+    return true
+end
+
+--- Inplace sort, Only using default blizzard one for now
+local SortLFGListResults = function(results)
+    local sortFunc = LFGBrowseUtil_SortSearchResults;
+    sortFunc(results); return results
+end
+
+local LFGListHookModule = {}
+function LFGListHookModule.Setup()
+    if isClassicEra then
+        --note: more accurate updates if we Hook UpdateResults instead of UpdateResultList.
+        assert(LFGBrowseFrame.UpdateResults, "LFGBrowseFrame.UpdateResults not found")
+        hooksecurefunc(LFGBrowseFrame, "UpdateResults", LFGListHookModule.UpdateResultList)
+    end
+end
+function LFGListHookModule.UpdateResultList(_, abortHookCallback)
+    if abortHookCallback then return end;
+    local numResults, results = C_LFGList.GetSearchResults();
+    if numResults == 0 then return end; -- blizz ui takes care of this
+    local numFiltered, filtered = 0, {}
+    for _, resultID in ipairs(results) do
+        if ShouldFilterForResultID(resultID) then
+            numFiltered = numFiltered + 1
+            filtered[numFiltered] = resultID
+        end
+    end
+    LFGBrowseFrame.results = SortLFGListResults(filtered);
+    LFGBrowseFrame.totalResults = numFiltered;
+    abortHookCallback = true; -- hack: important not to inf loop xD
+    LFGBrowseFrame:UpdateResults(abortHookCallback)
+end
 
 local ShowHideAddonButtonMixin = {}
 function ShowHideAddonButtonMixin:Setup()
@@ -79,8 +152,10 @@ function FiltersPanelMixin:Setup()
         Checkbox:SetSize(CHECKBOX_SIZE, CHECKBOX_SIZE)
         Checkbox:RegisterCallback("OnValueChanged", function(_, value)
             setting.Enabled = value;
+            LFGListHookModule.UpdateResultList()
         end)
         Checkbox:Init(setting.Enabled)
+        Checkbox:HookScript("OnClick", GenerateClosure(PlaySound, SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON));
         Checkbox.HoverBackground:SetAllPoints(container)
         local Label = container:CreateFontString(nil, "ARTWORK", "GameFontNormal")
         Mixin(Label, CallbackRegistryMixin);
@@ -123,13 +198,14 @@ function FiltersPanelMixin:Setup()
             input:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
             input:SetScript("OnEditFocusLost", function(self)
                 local input = tonumber(self:GetText());
-                if not input then setting[settingKey] = nil; self:SetText(""); return; end
-                if settingKey == "Minimum" then
+                if not input then setting[settingKey] = nil;
+                elseif settingKey == "Minimum" then
                     setting[settingKey] = math.min(input, setting.Maximum or input)
                 else
                     setting[settingKey] = math.max(input, setting.Minimum or input)
                 end
-                self:SetText(setting[settingKey]);
+                self:SetText(setting[settingKey] or "");
+                if setting.Enabled then LFGListHookModule.UpdateResultList() end;
             end)
             input:SetScript("OnEditFocusGained", function(self) self:HighlightText() end)
             input:SetText(setting[settingKey] or "")
@@ -160,12 +236,7 @@ function FiltersPanelMixin:Setup()
         FilterDropdown:SetPoint("LEFT", Checkbox.Label, "RIGHT", 15, 0)
         FilterDropdown.text = CLASS; FilterDropdown.resizeToText = true;
         local selectedIds = Addon.accountDB.ClassFilters.SelectedByClassID
-        for classID = 1, GetNumClasses() do
-            if (classID == 10) and (GetClassicExpansionLevel() <= LE_EXPANSION_CATACLYSM) then
-				classID = 11; -- fix gap between warlock and druid in pre mop xpacs
-			end
-            selectedIds[classID] = selectedIds[classID] or false
-        end
+        for _, id in pairs(CLASS_ID_BY_FILE) do selectedIds[id] = selectedIds[id] or false; end;
         local setSelected = function(classID) selectedIds[classID] = not selectedIds[classID] end;
         local isSelected = function(classID) return selectedIds[classID] end
         local isAllSelected = function()
@@ -178,6 +249,13 @@ function FiltersPanelMixin:Setup()
             local newState = not isAllSelected();
             for classID, _ in pairs(selectedIds) do selectedIds[classID] = newState end
         end
+        local hookWithUpdate = function(func)
+            return function(...)
+                func(...)
+                LFGListHookModule.UpdateResultList()
+            end
+        end
+        setSelected, setAllSelected = hookWithUpdate(setSelected), hookWithUpdate(setAllSelected)
         local setupClassFilter = function(rootDescription, classInfo)
             if not classInfo then return; end
             if isClassicEra
@@ -241,6 +319,7 @@ function FiltersPanelMixin:Setup()
         nextRelativeTop = container
     end
 end
+
 function Addon:ADDON_LOADED()
     self:InitSavedVars()
     self:InitUIPanel()
@@ -373,6 +452,7 @@ function Addon:InitUIPanel()
         Addon.PanelFrame.ToggleButton:SetPoint("RIGHT", LFGParentFrameCloseButton, "LEFT", 10, 0)
         Addon.PanelFrame.ToggleButton:SetSize(LFGParentFrameCloseButton:GetSize())
         Addon.PanelFrame.ToggleButton:Show()
+        LFGListHookModule:Setup()
     end
 end
 Addon.EFrame = EventFrame
