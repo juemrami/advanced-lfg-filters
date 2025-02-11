@@ -9,6 +9,9 @@ local L = { -- todo: some actual translations for missing pre-localized strings
     SELECTED_CLASSES = "Selected Classes",
     SHOW_APPLICANTS = "Show Applicants",
     SHOW_PREMADE_GROUPS = "Show Premade Groups",
+    TOGGLE_FILTERS_PANEL = "Toggle Filters Panel",
+    FILTER_PANEL_TITLE = "Advanced Filters",
+    FILTER_BY_CLASS = "Filter by Class",
 }
 local CLASS_FILE_BY_ID = {
     [1] = "WARRIOR", [2] = "PALADIN", [3] = "HUNTER", [4] = "ROGUE",
@@ -17,6 +20,7 @@ local CLASS_FILE_BY_ID = {
 };
 local CLASS_ID_BY_FILE = tInvert(CLASS_FILE_BY_ID)
 local CHECKBOX_SIZE = 28
+local CLASS_FILTER_DROPDOWN_TAG = "ADV_LFG_CLASS_FILTER"
 local isPlayerHorde = UnitFactionGroup("player") == "Horde"
 local isClassicEra = WOW_PROJECT_ID == WOW_PROJECT_CLASSIC
 local isSeasonOfDiscovery = C_Seasons.GetActiveSeason() == Enum.SeasonID.SeasonOfDiscovery
@@ -118,7 +122,7 @@ function ShowHideAddonButtonMixin:Setup()
     self.RightSeparator:SetHeight(22)
     self:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT");
-        GameTooltip:AddLine("Toggle Filters Panel", 1, 1, 1);
+        GameTooltip:AddLine(L.TOGGLE_FILTERS_PANEL, 1, 1, 1);
         GameTooltip:Show();
     end)
     self:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -256,7 +260,7 @@ function FiltersPanelMixin:Setup()
     do -- Classes Filter
         local setting = Addon.accountDB.Applicants.ClassFilters
         local container = createSettingContainer()
-        local Checkbox = addCheckboxWidget(container, "Filter by Class", setting)
+        local Checkbox = addCheckboxWidget(container, L.FILTER_BY_CLASS, setting)
         Checkbox.Label:UnregisterEvents(); -- do not auto resize this label.
         local FilterDropdown = CreateFrame("DropdownButton", nil, container, "WowStyle1FilterDropdownTemplate")
         FilterDropdown:SetPoint("LEFT", Checkbox.Label, "RIGHT", 10, 0)
@@ -337,7 +341,7 @@ function FiltersPanelMixin:Setup()
         FilterDropdown:HookScript("OnMouseDown", GameTooltip_Hide)
         FilterDropdown:SetupMenu(function(_, rootDescription)
             ---@cast rootDescription RootMenuDescriptionProxy
-            rootDescription:SetTag("ADV_LFG_CLASS_FILTER")
+            rootDescription:SetTag(CLASS_FILTER_DROPDOWN_TAG)
             rootDescription:CreateCheckbox(ALL_CLASSES, isAllSelected, setAllSelected)
             for classID, _ in pairs(selectedIds) do
                 setupClassFilter(rootDescription, C_CreatureInfo.GetClassInfo(classID))
@@ -494,7 +498,7 @@ function Addon:InitUIPanel()
         -- panel:SetScript("OnHide", panel.StopMovingOrSizing)
         -- panel:SetScript("OnShow", panel.StartMoving)
         local title = panel:GetTitleText(); ---@type FontString
-        title:SetText("Advanced Filters");
+        title:SetText(L.FILTER_PANEL_TITLE);
         title:ClearAllPoints()
         title:SetPoint("TOP", panel.TitleContainer, "TOP", 0, -5)
         title:SetPoint("LEFT"); title:SetPoint("RIGHT");
