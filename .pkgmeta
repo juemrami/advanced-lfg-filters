@@ -1,0 +1,4 @@
+package-as: AdvancedLFGFilters
+
+move-folders:
+    AdvancedLFGFilters/AdvancedLFGFilters: AdvancedLFGFilters

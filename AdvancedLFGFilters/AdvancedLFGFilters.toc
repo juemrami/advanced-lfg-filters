@@ -1,9 +1,11 @@
 ## Interface: 11506
 ## Title: Advanced Group Finder Filters
 ## Notes: Additional filtering options for the new Blizzard Group Finder
-## Version: 0.0.1
+## Version: @project-version@
 ## Author: Bigsxy
 ## DefaultState: enabled
 ## SavedVariables: AdvancedLFGFiltersDB
 ## Dependencies: Blizzard_UIPanelTemplates
+## X-Curse-Project-ID: 1197972
+## X-Wago-ID: 56n9aaN9
 AdvancedLFGFilters.lua
