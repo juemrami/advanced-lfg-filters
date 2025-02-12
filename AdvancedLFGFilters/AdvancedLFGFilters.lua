@@ -13,6 +13,7 @@ local L = { -- todo: some actual translations for missing pre-localized strings
     FILTER_PANEL_TITLE = "Advanced Filters",
     FILTER_BY_CLASS = "Filter by Class",
     HIDE_DELISTED = "Hide Delisted Entries",
+    FILTER_BY_ROLE = "Filter Roles",
 }
 local CLASS_FILE_BY_ID = {
     [1] = "WARRIOR", [2] = "PALADIN", [3] = "HUNTER", [4] = "ROGUE",
@@ -22,6 +23,18 @@ local CLASS_FILE_BY_ID = {
 local CLASS_ID_BY_FILE = tInvert(CLASS_FILE_BY_ID)
 local CHECKBOX_SIZE = 28
 local CLASS_FILTER_DROPDOWN_TAG = "ADV_LFG_CLASS_FILTER"
+local LFG_ROLE_ATLAS = {
+	["GUIDE"] = "UI-LFG-RoleIcon-Leader-Micro",
+	["TANK"] = "UI-LFG-RoleIcon-Tank-Micro",
+	["HEALER"] = "UI-LFG-RoleIcon-Healer-Micro",
+	["DPS"] = "UI-LFG-RoleIcon-DPS-Micro",
+};
+local LFG_ROLE_DISABLED_ATLAS = {
+    ["GUIDE"] = "UI-LFG-RoleIcon-Leader-Disabled",
+    ["TANK"] = "UI-LFG-RoleIcon-Tank-Disabled",
+    ["HEALER"] = "UI-LFG-RoleIcon-Healer-Disabled",
+    ["DPS"] = "UI-LFG-RoleIcon-DPS-Disabled",
+}
 local isPlayerHorde = UnitFactionGroup("player") == "Horde"
 local isClassicEra = WOW_PROJECT_ID == WOW_PROJECT_CLASSIC
 local isSeasonOfDiscovery = C_Seasons.GetActiveSeason() == Enum.SeasonID.SeasonOfDiscovery
@@ -37,6 +50,17 @@ local ShouldFilterForResultID = function(resultID)
         local applicants = Addon.accountDB.Applicants
         if not applicants.Enabled then return false end
         local applicant = C_LFGList.GetSearchResultLeaderInfo(resultID)
+        if applicants.RoleFilters.Enabled then
+            local appliedRoles = applicant.lfgRoles
+            if not (appliedRoles.tank or appliedRoles.healer or appliedRoles.dps)
+            then -- edge case: assume dps for applicants with 0 roles selected.
+                appliedRoles.dps = true
+            end;
+            if not ((applicants.RoleFilters.DPS and appliedRoles.dps)
+                or (applicants.RoleFilters.TANK and  appliedRoles.tank)
+                or (applicants.RoleFilters.HEALER and appliedRoles.healer)
+            ) then return false end;
+        end
         if applicants.ClassFilters.Enabled then
             local classID = CLASS_ID_BY_FILE[applicant.classFilename]
             if not applicants.ClassFilters.SelectedByClassID[classID] then return false end
@@ -181,7 +205,7 @@ function FiltersPanelMixin:Setup()
             if useSetting then setting[key or "Enabled"] = value; end;
             LFGListHookModule.UpdateResultList()
         end)
-        if useSetting then Checkbox:Init(setting and setting.Enabled or nil) end;
+        if useSetting then Checkbox:Init(setting[key or "Enabled"]) end;
         Checkbox:HookScript("OnClick", GenerateClosure(PlaySound, SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON));
         Checkbox.HoverBackground:SetAllPoints(container)
         local Label = container:CreateFontString(nil, "ARTWORK", "GameFontNormal")
@@ -352,6 +376,43 @@ function FiltersPanelMixin:Setup()
         end)
         nextRelativeTop = container
     end
+    do -- Role Filter
+        local setting = Addon.accountDB.Applicants.RoleFilters
+        local container = createSettingContainer()
+        maxCheckboxLabelWith = 0; -- do not match to previous widths
+        local Checkbox = addCheckboxWidget(container, L.FILTER_BY_ROLE, setting)
+        local anchorTo = Checkbox.Label
+        local createRoleWidget = function(role)
+            local size = container:GetHeight() + 2
+            local checkboxSize = size * 0.45
+            local normalAtlas, disabledAtlas = LFG_ROLE_ATLAS[role], LFG_ROLE_DISABLED_ATLAS[role]
+            local button = CreateFrame("Button", nil, container)
+            local buttonTex = button:CreateTexture(nil, "ARTWORK")
+            buttonTex:SetAllPoints(button)
+            buttonTex:SetAtlas(normalAtlas)
+            button:SetSize(size, size)
+            button:SetPoint("LEFT", anchorTo, "RIGHT", role == "TANK" and 16 or 6, 0)
+            local checkbox = addCheckboxWidget(button, "", setting, role)
+            checkbox.Label:Hide()
+            checkbox:SetSize(checkboxSize, checkboxSize)
+            checkbox:ClearAllPoints()
+            checkbox:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", -4, 0)
+            checkbox.HoverBackground:SetAlpha(0.6)
+            checkbox.HoverBackground:AdjustPointsOffset(-1, 0) -- ui nit
+            local setRoleAtlas = function(_, value)
+                buttonTex:SetAtlas(value and normalAtlas or disabledAtlas)
+                -- button:SetNormalAtlas(value and normalAtlas or disabledAtlas)
+            end;
+            checkbox:RegisterCallback("OnValueChanged", setRoleAtlas)
+            setRoleAtlas(nil, setting[role]); -- set initial state
+            button:SetScript("OnClick", function() checkbox:Click() end)
+            button:SetScript("OnEnter", function() checkbox:OnEnter() end)
+            button:SetScript("OnLeave", function() checkbox:OnLeave() end)
+            anchorTo = button
+        end
+        for _, role in ipairs({"TANK", "HEALER", "DPS"}) do createRoleWidget(role) end;
+        nextRelativeTop = container
+    end
     do -- Premade Groups header
         local container = createSettingContainer(0, -12)
         addHeaderFontString(container, LFGLIST_NAME)
@@ -397,9 +458,10 @@ function FiltersPanelMixin:Setup()
         nextRelativeTop = container
     end
     do -- Hide Delisted Entries
-        local container = createSettingContainer(nil, -20)
+        local container = createSettingContainer(nil)
+        container:ClearPoint("TOP") -- anchor to bottom instead
+        container:SetPoint("BOTTOM", self.Bg, "BOTTOM", 0, 5)
         addCheckboxWidget(container, L.HIDE_DELISTED, Addon.accountDB, "HideDelisted")
-        nextRelativeTop = container
     end
 end
 
@@ -438,11 +500,13 @@ function Addon:InitSavedVars()
                 Enabled = false,
                 ---@type {[number]: boolean}
                 SelectedByClassID = {
-                    key = "number",
-                    value = "boolean",
-                    nullable = false,
+                    key = "number", value = "boolean", nullable = false,
                 },
-            }
+            },
+            RoleFilters = {
+                Enabled = false,
+                TANK = true, HEALER = true, DPS = true,
+            },
         },
         HideDelisted = false,
     }
@@ -481,7 +545,7 @@ function Addon:InitSavedVars()
     end
     --- Removes deprecated entries
     for key, _ in pairs(accountDB) do
-        if not validationTable[key] then accountDB[key] = nil;
+        if type(validationTable[key]) == "nil" then accountDB[key] = nil;
         else validateSavedVar(accountDB, key, validationTable[key]) end
     end
 
