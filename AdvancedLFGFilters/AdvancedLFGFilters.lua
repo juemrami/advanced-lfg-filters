@@ -12,6 +12,7 @@ local L = { -- todo: some actual translations for missing pre-localized strings
     TOGGLE_FILTERS_PANEL = "Toggle Filters Panel",
     FILTER_PANEL_TITLE = "Advanced Filters",
     FILTER_BY_CLASS = "Filter by Class",
+    HIDE_DELISTED = "Hide Delisted Entries",
 }
 local CLASS_FILE_BY_ID = {
     [1] = "WARRIOR", [2] = "PALADIN", [3] = "HUNTER", [4] = "ROGUE",
@@ -31,6 +32,7 @@ local isCataclysm = WOW_PROJECT_ID == WOW_PROJECT_CATACLYSM_CLASSIC
 local ShouldFilterForResultID = function(resultID)
     local resultData = C_LFGList.GetSearchResultInfo(resultID)
     if not resultData then return false end
+    if resultData.isDelisted and Addon.accountDB.HideDelisted then return false end
     if resultData.numMembers == 1 then -- applicant
         local applicants = Addon.accountDB.Applicants
         if not applicants.Enabled then return false end
@@ -169,13 +171,14 @@ function FiltersPanelMixin:Setup()
         return Header
     end
     local maxCheckboxLabelWith = 0;
-    local addCheckboxWidget = function(container, label, setting)
+    ---@param key string? -- defaults to `Enabled`
+    local addCheckboxWidget = function(container, label, setting, key)
         local Checkbox = CreateFrame("CheckButton", nil, container, "SettingsCheckboxTemplate")
         Checkbox:SetPoint("LEFT")
         Checkbox:SetSize(CHECKBOX_SIZE, CHECKBOX_SIZE)
         local useSetting = setting and type(setting) == "table"
         Checkbox:RegisterCallback("OnValueChanged", function(_, value)
-            if useSetting then setting.Enabled = value; end;
+            if useSetting then setting[key or "Enabled"] = value; end;
             LFGListHookModule.UpdateResultList()
         end)
         if useSetting then Checkbox:Init(setting and setting.Enabled or nil) end;
@@ -393,6 +396,11 @@ function FiltersPanelMixin:Setup()
         MinInput:SetPoint("LEFT", Checkbox.Label, "RIGHT", labelRightPadding, 0)
         nextRelativeTop = container
     end
+    do -- Hide Delisted Entries
+        local container = createSettingContainer(nil, -20)
+        addCheckboxWidget(container, L.HIDE_DELISTED, Addon.accountDB, "HideDelisted")
+        nextRelativeTop = container
+    end
 end
 
 function Addon:ADDON_LOADED()
@@ -436,6 +444,7 @@ function Addon:InitSavedVars()
                 },
             }
         },
+        HideDelisted = false,
     }
     local accountDB = _G[TOC_NAME.."DB"]
     if not accountDB then
