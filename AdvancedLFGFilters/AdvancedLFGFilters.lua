@@ -127,6 +127,19 @@ function LFGListHookModule.Setup()
             if Addon.accountDB.GlobalDisable then return end
             LFGListHookModule.UpdateResultList(...)
         end)
+        EventFrame:RegisterEvent("LFG_LIST_SEARCH_RESULT_UPDATED")
+        EventFrame:HookScript("OnEvent", function(_, event, ...)
+            if event == "LFG_LIST_SEARCH_RESULT_UPDATED" then
+                if Addon.accountDB.GlobalDisable then return end
+                local resultID = ...
+                local result = C_LFGList.GetSearchResultInfo(resultID)
+                if result and result.isDelisted and Addon.accountDB.HideDelisted then
+                    LFGBrowseFrame.ScrollBox:GetDataProvider():RemoveByPredicate(function(data)
+                        return data.resultID == resultID
+                    end)
+                end
+            end
+        end)
     end
 end
 function LFGListHookModule.UpdateResultList(_, abortHookCallback)
