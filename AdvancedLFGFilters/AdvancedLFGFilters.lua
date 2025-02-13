@@ -43,6 +43,15 @@ local isBurningCrusade = WOW_PROJECT_ID == WOW_PROJECT_BURNING_CRUSADE_CLASSIC
 local isWrath = WOW_PROJECT_ID == WOW_PROJECT_WRATH_CLASSIC
 local isCataclysm = WOW_PROJECT_ID == WOW_PROJECT_CATACLYSM_CLASSIC
 
+local meetsSettingCountRequirements = function(setting, count)
+    local min, max = setting.Minimum, setting.Maximum
+    if not (min or max) then return true end
+    -- edge case: when user has a minimum of 0, and no maximum, assume exactly 0 is expected.
+    if min == 0 and not max then return count == 0 end
+    if min and count < min then return false end
+    if max and count > max then return false end
+    return true
+end
 local ShouldFilterForResultID = function(resultID)
     local resultData = C_LFGList.GetSearchResultInfo(resultID)
     if not resultData then return false end
@@ -72,24 +81,22 @@ local ShouldFilterForResultID = function(resultID)
         local numMembers = resultData.numMembers
         if premadeGroups.MemberCounts.Enabled then
             local setting = premadeGroups.MemberCounts
+            -- note: don't do the `meetsSettingCountRequirements` edge case check for member counts
             if setting.Minimum and numMembers < setting.Minimum then return false end
             if setting.Maximum and numMembers > setting.Maximum then return false end
         end
         local roleCounts = C_LFGList.GetSearchResultMemberCounts(resultID)
         if premadeGroups.TankCounts.Enabled then
             local setting = premadeGroups.TankCounts
-            if setting.Minimum and roleCounts.TANK < setting.Minimum then return false end
-            if setting.Maximum and roleCounts.TANK > setting.Maximum then return false end
+            if not meetsSettingCountRequirements(setting, roleCounts.TANK) then return false end
         end
         if premadeGroups.HealerCounts.Enabled then
             local setting = premadeGroups.HealerCounts
-            if setting.Minimum and roleCounts.HEALER < setting.Minimum then return false end
-            if setting.Maximum and roleCounts.HEALER > setting.Maximum then return false end
+            if not meetsSettingCountRequirements(setting, roleCounts.HEALER) then return false end
         end
         if premadeGroups.DamagerCounts.Enabled then
             local setting = premadeGroups.DamagerCounts
-            if setting.Minimum and roleCounts.DAMAGER < setting.Minimum then return false end
-            if setting.Maximum and roleCounts.DAMAGER > setting.Maximum then return false end
+            if not meetsSettingCountRequirements(setting, roleCounts.DAMAGER) then return false end
         end
     end
     return true
