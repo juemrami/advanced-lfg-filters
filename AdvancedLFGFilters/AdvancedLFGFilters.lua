@@ -102,6 +102,12 @@ local ShouldFilterForResultID = function(resultID)
     return true
 end
 
+local GetClassColor = function(classID)
+    local classInfo = C_CreatureInfo.GetClassInfo(classID)
+    assert(classInfo, "classInfo not found for classID: ", classID)
+    return (CUSTOM_CLASS_COLORS and CUSTOM_CLASS_COLORS[classInfo.classFile])
+        or (RAID_CLASS_COLORS and RAID_CLASS_COLORS[classInfo.classFile]);
+end
 local GetColoredClassNameByID = function(classID, useDisabledColor)
     local classInfo = C_CreatureInfo.GetClassInfo(classID)
     assert(classInfo, "classInfo not found for classID: ", classID)
@@ -140,6 +146,7 @@ function LFGListHookModule.Setup()
                 end
             end
         end)
+        LFGListHookModule.SetupClassColorDataDisplays()
     end
 end
 function LFGListHookModule.UpdateResultList(_, abortHookCallback)
@@ -159,6 +166,130 @@ function LFGListHookModule.UpdateResultList(_, abortHookCallback)
     LFGBrowseFrame.totalResults = numFiltered;
     abortHookCallback = true; -- hack: important not to inf loop xD
     LFGBrowseFrame:UpdateResults(abortHookCallback)
+end
+
+function LFGListHookModule.SetupClassColorDataDisplays()
+    local SIMPLE_ROLE_ATLASES = {
+        TANK = "groupfinder-icon-role-micro-tank",
+        HEALER = "groupfinder-icon-role-micro-heal",
+        DAMAGER = "groupfinder-icon-role-micro-dps",
+    };
+    local ROLE_DISPLAY_ORDER = {"TANK", "HEALER", "DAMAGER"}
+    local CUSTOM_ICON_SIZE = 17.5
+    local CUSTOM_ICON_ROLE_SIZE = CUSTOM_ICON_SIZE * 0.70
+    local DataDisplayPool = CreateFramePool("Frame", LFGBrowseFrame, nil, nil, nil,
+        function(display) -- Initializer (called when new frame created and added to pool)
+            local display = display; ---@class CustomDataDisplay: Frame
+            display.Icons = {}
+            for i = 1, 5 do
+                local Icon = CreateFrame("Frame", nil, display)
+                local roleTex = Icon:CreateTexture(nil, "ARTWORK")
+                local classBg = Icon:CreateTexture(nil, "BACKGROUND")
+                local bgMask = Icon:CreateMaskTexture(nil, "BACKGROUND")
+                Icon:SetSize(CUSTOM_ICON_SIZE, CUSTOM_ICON_SIZE)
+                roleTex:SetSize(CUSTOM_ICON_ROLE_SIZE, CUSTOM_ICON_ROLE_SIZE)
+                roleTex:SetPoint("CENTER")
+                classBg:SetAllPoints()
+                bgMask:SetAllPoints(classBg)
+                bgMask:SetAtlas("CircleMaskScalable", false)
+                classBg:AddMaskTexture(bgMask)
+                Icon.SetRole = function(_, role) roleTex:SetAtlas(SIMPLE_ROLE_ATLASES[role], false) end
+                Icon.SetClassColor = function(_, classID)
+                    local r, g, b = GetClassColor(classID):GetRGB()
+                    classBg:SetColorTexture(r, g, b, 0.85)
+                end
+                Icon.SetEmptySlot = function(_)
+                    roleTex:SetAtlas("groupfinder-icon-emptyslot", false)
+                    classBg:SetColorTexture(0, 0, 0, 0);
+                end
+                Icon.SetDesaturated = function(_, desaturated)
+                    roleTex:SetDesaturated(desaturated)
+                    classBg:SetDesaturated(desaturated)
+                end
+                Icon.SetAlpha = function(_, alpha)
+                    roleTex:SetAlpha(alpha)
+                    classBg:SetAlpha(alpha ~= 1 and 0.2 or 1)
+                end
+                display.Icons[i] = Icon
+                if i == 1 then display.Icons[i]:SetPoint("RIGHT", -12, 0);
+                else display.Icons[i]:SetPoint("RIGHT", display.Icons[i-1], "LEFT", -0.25, 0) end;
+            end
+            display:Hide()
+        end
+    );
+    local InitEntryWithCustomDataDisplay = function(entry, data)
+        if not (entry.DataDisplay and entry.DataDisplay.Enumerate)
+        or entry.CustomDataDisplay then return end;
+        local customDisplay = DataDisplayPool:Acquire();
+        customDisplay:SetParent(entry)
+        customDisplay:SetAllPoints(entry.DataDisplay)
+        entry.CustomDataDisplay = customDisplay
+    end
+    local OnEntryDataDisplayUpdate = function(display, displayType, maxNumPlayers, _, disabled, isSolo)
+        local entry = display:GetParent() ---@type Frame|{CustomDataDisplay: CustomDataDisplay}
+        if not entry.CustomDataDisplay then return;
+        else entry.CustomDataDisplay:Hide() end;
+        if Addon.accountDB.GlobalDisable then return end;
+        if not entry.resultID then return end;
+        if isSolo then return end;
+        if displayType ~= Enum.LFGListDisplayType.RoleEnumerate then return end;
+        if maxNumPlayers > 5 then return end; -- this is inferred by above check.
+        local resultData = C_LFGList.GetSearchResultInfo(entry.resultID);
+        if not resultData then return end;
+        entry.CustomDataDisplay:Show()
+        entry.DataDisplay.Enumerate:Hide() -- hide original
+        for i = 1, #entry.CustomDataDisplay.Icons do
+            if i > maxNumPlayers then entry.CustomDataDisplay.Icons[i]:Hide()
+            else
+                entry.CustomDataDisplay.Icons[i]:Show()
+                entry.CustomDataDisplay.Icons[i]:SetDesaturated(disabled)
+                entry.CustomDataDisplay.Icons[i]:SetAlpha(disabled and 0.5 or 1.0)
+            end
+        end
+        local numMembers = resultData.numMembers;
+        local displayData = {};--- {[lfgRole]: playerInfo[]}
+        for i = 1, numMembers do
+            local memberInfo = C_LFGList.GetSearchResultPlayerInfo(entry.resultID, i);
+            if memberInfo then
+                local role = memberInfo.assignedRole or "DAMAGER";
+                displayData[role] = displayData[role] or {};
+                tinsert(displayData[role], memberInfo);
+            end
+        end
+        --Note that icons are numbered from right (1) to left (5)
+        local iconIndex = maxNumPlayers; -- starts at leftmost icon
+        for roleIdx = 1, #ROLE_DISPLAY_ORDER do
+            local role = ROLE_DISPLAY_ORDER[roleIdx];
+            local numRolePlayers = displayData[role] and #displayData[role] or 0;
+            for i = 1, numRolePlayers do
+                local icon = entry.CustomDataDisplay.Icons[iconIndex];
+                icon:Show()
+                icon:SetRole(role)
+                local class = displayData[role][i].classFilename;
+                icon:SetClassColor(CLASS_ID_BY_FILE[class])
+                iconIndex = iconIndex - 1;
+                if ( iconIndex < 1 ) then
+                    return;
+                end
+            end
+        end
+        for i = 1, iconIndex do
+            entry.CustomDataDisplay.Icons[i]:SetEmptySlot()
+        end
+    end
+    local OnEntryFactoryFrameReset = function(...)
+        local _, frame = ...;
+        if frame.CustomDataDisplay then
+            DataDisplayPool:Release(frame.CustomDataDisplay)
+        end
+        -- also call the default factory resetter for the frame (req)
+        Pool_HideAndClearAnchors(...)
+
+    end
+    hooksecurefunc("LFGBrowseSearchEntry_Init", InitEntryWithCustomDataDisplay)
+    -- Interface\AddOns\Blizzard_GroupFinder_VanillaStyle\Blizzard_LFGVanilla_Browse.lua:689
+    hooksecurefunc("LFGBrowseGroupDataDisplay_Update", OnEntryDataDisplayUpdate)
+    LFGBrowseFrame.ScrollBox:GetView():SetFrameFactoryResetter(OnEntryFactoryFrameReset)
 end
 
 local ShowHideAddonButtonMixin = {}
