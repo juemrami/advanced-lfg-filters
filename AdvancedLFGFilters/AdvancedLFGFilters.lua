@@ -140,7 +140,10 @@ function LFGListHookModule.Setup()
                 local resultID = ...
                 local result = C_LFGList.GetSearchResultInfo(resultID)
                 if result and result.isDelisted and Addon.accountDB.HideDelisted then
-                    LFGBrowseFrame.ScrollBox:GetDataProvider():RemoveByPredicate(function(data)
+                    --note: data provider can be nil after: failed search, update during a search, empty searches.
+                    local dataProvider = LFGBrowseFrame.ScrollBox:GetDataProvider()
+                    if not dataProvider then return end;
+                    dataProvider:RemoveByPredicate(function(data)
                         return data.resultID == resultID
                     end)
                 end
@@ -222,7 +225,6 @@ function LFGListHookModule.SetupClassColorDataDisplays()
         or entry.CustomDataDisplay then return end;
         local customDisplay = DataDisplayPool:Acquire();
         customDisplay:SetParent(entry)
-        customDisplay:SetAllPoints(entry.DataDisplay)
         entry.CustomDataDisplay = customDisplay
     end
     local OnEntryDataDisplayUpdate = function(display, displayType, maxNumPlayers, _, disabled, isSolo)
@@ -238,6 +240,8 @@ function LFGListHookModule.SetupClassColorDataDisplays()
         if not resultData then return end;
         entry.CustomDataDisplay:Show()
         entry.DataDisplay.Enumerate:Hide() -- hide original
+        -- bugfix: anchor custom display on update, instead of on init
+        entry.CustomDataDisplay:SetAllPoints(display)
         for i = 1, #entry.CustomDataDisplay.Icons do
             if i > maxNumPlayers then entry.CustomDataDisplay.Icons[i]:Hide()
             else
