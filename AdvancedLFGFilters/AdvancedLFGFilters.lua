@@ -123,9 +123,39 @@ local SortLFGListResults = function(results)
     local sortFunc = LFGBrowseUtil_SortSearchResults;
     sortFunc(results); return results
 end
+--------------------------------------------------------------------------------
+-- LFGList Hook Module
+--------------------------------------------------------------------------------
+-- Connects the filters to react to updates to the LFGList UI, and attaches the filters panel UI
 
 local LFGListHookModule = {}
-function LFGListHookModule.Setup()
+function LFGListHookModule.AttachToGroupFinderUI()
+    if not isClassicEra then return end
+    assert(Addon.PanelFrame and Addon.PanelFrame.ToggleButton, "Required Addon Frames not found", Addon)
+    assert(LFGBrowseFrame.OptionsButton, "LFGBrowseFrame.OptionsButton not found")
+    Addon.GlobalToggle:SetParent(LFGBrowseFrame)
+    Addon.GlobalToggle:SetPoint("RIGHT", LFGBrowseFrame.OptionsButton, "LEFT", -5, 0)
+    Addon.PanelFrame:SetParent(LFGBrowseFrame)
+    Addon.PanelFrame:ClearAllPoints()
+    Addon.PanelFrame:SetPoint("BOTTOMLEFT", LFGBrowseFrame, "BOTTOMRIGHT", -30, 76)
+    Addon.PanelFrame:SetShown(not Addon.accountDB.GlobalDisable)
+    local LFGParentFrameCloseButton do
+        for _, frame in ipairs({LFGParentFrame:GetChildren()}) do
+            if frame:GetObjectType() == "Button"
+            and frame:GetNormalTexture() -- find close button texture
+            and frame:GetNormalTexture():GetTextureFileID() == 130832 then
+                LFGParentFrameCloseButton = frame
+                break;
+            end
+        end
+    end
+    assert(LFGParentFrameCloseButton, "LFGParentFrameCloseButton not found")
+    Addon.PanelFrame.ToggleButton:SetParent(LFGBrowseFrame)
+    Addon.PanelFrame.ToggleButton:SetPoint("RIGHT", LFGParentFrameCloseButton, "LEFT", 10, 0)
+    Addon.PanelFrame.ToggleButton:SetSize(LFGParentFrameCloseButton:GetSize())
+    Addon.PanelFrame.ToggleButton:SetShown(not Addon.accountDB.GlobalDisable)
+
+    -- Hook results filtering callbacks to blizzard updates to the LFGList UI
     if isClassicEra then
         --note: more accurate updates if we Hook UpdateResults instead of UpdateResultList.
         assert(LFGBrowseFrame.UpdateResults, "LFGBrowseFrame.UpdateResults not found")
@@ -153,9 +183,8 @@ function LFGListHookModule.Setup()
     end
 end
 function LFGListHookModule.UpdateResultList(_, abortHookCallback)
-    if Addon.accountDB.GlobalDisable -- call blizzards UpdateResultList to reset ui.
-    then LFGBrowseFrame:UpdateResultList(); return end
-    if abortHookCallback then return end;
+    if Addon.accountDB.GlobalDisable then return end
+    if abortHookCallback then return end
     local numResults, results = C_LFGList.GetSearchResults();
     if numResults == 0 then return end; -- blizz ui takes care of this
     local numFiltered, filtered = 0, {}
@@ -169,6 +198,10 @@ function LFGListHookModule.UpdateResultList(_, abortHookCallback)
     LFGBrowseFrame.totalResults = numFiltered;
     abortHookCallback = true; -- hack: important not to inf loop xD
     LFGBrowseFrame:UpdateResults(abortHookCallback)
+end
+function LFGListHookModule.RefreshScrollView()
+    -- call blizzards UpdateResultList to reset dataprovider/ui.
+    if LFGBrowseFrame then LFGBrowseFrame:UpdateResultList() end;
 end
 
 function LFGListHookModule.SetupClassColorDataDisplays()
@@ -295,6 +328,10 @@ function LFGListHookModule.SetupClassColorDataDisplays()
     hooksecurefunc("LFGBrowseGroupDataDisplay_Update", OnEntryDataDisplayUpdate)
     LFGBrowseFrame.ScrollBox:GetView():SetFrameFactoryResetter(OnEntryFactoryFrameReset)
 end
+--------------------------------------------------------------------------------
+-- Filters Panel UI Toggle button
+--------------------------------------------------------------------------------
+-- Button added to the LFGList frame to allow maximizing/minimzing the filters panel
 
 local ShowHideAddonButtonMixin = {}
 function ShowHideAddonButtonMixin:Setup()
@@ -335,6 +372,10 @@ function ShowHideAddonButtonMixin:OnButtonStateChanged()
         self:SetHighlightTexture("Interface\\Buttons\\UI-Panel-MinimizeButton-Highlight", "ADD")
     end
 end
+--------------------------------------------------------------------------------
+-- Filters Panel UI
+--------------------------------------------------------------------------------
+-- Main UI panel of addon containing user facing filtering options
 
 local FiltersPanelMixin = {}
 function FiltersPanelMixin:Setup()
@@ -625,6 +666,9 @@ function FiltersPanelMixin:Setup()
         addCheckboxWidget(container, L.HIDE_DELISTED, Addon.accountDB, "HideDelisted")
     end
 end
+--------------------------------------------------------------------------------
+-- Addon Main
+--------------------------------------------------------------------------------
 
 function Addon:ADDON_LOADED()
     self:InitSavedVars()
@@ -716,11 +760,14 @@ end
 
 function Addon:InitUIPanel()
     local panelName = TOC_NAME.."Panel"
-    local toggleName = panelName.."ToggleButton"
+    local globalToggle = TOC_NAME.."GlobalToggle"
+    local frameToggle = panelName.."ToggleButton"
+    Addon.GlobalToggle = _G[globalToggle] or CreateFrame("Button", globalToggle);
     Addon.PanelFrame = _G[panelName] or CreateFrame("Frame", panelName, UIParent, "PortraitFrameTemplate")
-    Addon.PanelFrame.ToggleButton = _G[toggleName] or CreateFrame("Button", toggleName, Addon.PanelFrame);
-    local panel, panelToggle = Addon.PanelFrame, Addon.PanelFrame.ToggleButton
-    if not panel.initialized then
+    Addon.PanelFrame.ToggleButton = _G[frameToggle] or CreateFrame("Button", frameToggle, Addon.PanelFrame);
+    if not Addon.PanelFrame.initialized then
+        local panel = Addon.PanelFrame
+        frameToggle, globalToggle = Addon.PanelFrame.ToggleButton, Addon.GlobalToggle;
         ButtonFrameTemplate_HidePortrait(panel)
         -- ButtonFrameTemplate_HideAttic(panel)
         panel:SetWidth(250)
@@ -742,64 +789,38 @@ function Addon:InitUIPanel()
         panel.Bg:SetTexture("Interface\\FrameGeneral\\UI-Background-Marble");
         panel.Bg:SetVertTile(false); panel.Bg:SetHorizTile(false);
         FiltersPanelMixin.Setup(panel)
-        ShowHideAddonButtonMixin.Setup(panelToggle)
-        local updateButton = GenerateClosure(ShowHideAddonButtonMixin.OnButtonStateChanged, panelToggle)
+        ShowHideAddonButtonMixin.Setup(frameToggle)
+        local updateButton = GenerateClosure(ShowHideAddonButtonMixin.OnButtonStateChanged, frameToggle)
         panel:HookScript("OnShow", updateButton); panel:HookScript("OnHide", updateButton)
         panel:Hide()
+        globalToggle.Checkbox = CreateFrame("CheckButton", nil, globalToggle, "SettingsCheckboxTemplate")
+        globalToggle.Checkbox:HookScript("OnClick", function() PlaySound(SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON) end)
+        globalToggle.Checkbox:SetPoint("LEFT", globalToggle)
+        globalToggle.Checkbox:SetSize(16, 16)
+        globalToggle.Label = globalToggle:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+        globalToggle.Label:SetText(L.ADDON_ACRONYM)
+        globalToggle.Label:SetPoint("LEFT", globalToggle.Checkbox, "RIGHT", 2, 0)
+        globalToggle:SetScript("OnClick", function() globalToggle.Checkbox:Click() end)
+        globalToggle:SetScript("OnEnter", function() globalToggle.Checkbox:OnEnter() end)
+        globalToggle:SetScript("OnLeave", function() globalToggle.Checkbox:OnLeave() end)
+        globalToggle:SetHeight(16)
+        globalToggle:SetWidth(16 + globalToggle.Label:GetWidth() + 2)
+        local onUpdateSetting = function(isGlobalDisabled)
+            Addon.PanelFrame:SetShown(not isGlobalDisabled)
+            Addon.PanelFrame.ToggleButton:SetShown(not isGlobalDisabled)
+            LFGListHookModule.RefreshScrollView()
+        end
+        globalToggle.Checkbox:RegisterCallback("OnValueChanged", function(_, isChecked)
+            Addon.accountDB.GlobalDisable = not isChecked
+            onUpdateSetting(Addon.accountDB.GlobalDisable)
+        end)
+        globalToggle.Checkbox:Init(not Addon.accountDB.GlobalDisable)
+        onUpdateSetting(Addon.accountDB.GlobalDisable) -- match initial state
+        globalToggle.Checkbox.HoverBackground:SetAlpha(0)
         panel.initialized = true
     end
-    if LFGBrowseFrame then
-        if LFGBrowseFrame.OptionsButton then
-            local optionsButton = LFGBrowseFrame.OptionsButton
-            local toggle = CreateFrame("Button", TOC_NAME.."GlobalToggle", LFGBrowseFrame)
-            toggle:SetPoint("RIGHT", LFGBrowseFrame.OptionsButton, "LEFT", -5, 0)
-            local pad = 2
-            toggle.Checkbox = CreateFrame("CheckButton", nil, toggle, "SettingsCheckboxTemplate")
-            toggle.Checkbox:HookScript("OnClick", function() PlaySound(SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON) end)
-            toggle.Checkbox:SetPoint("LEFT", toggle)
-            toggle.Checkbox:SetSize(optionsButton:GetSize())
-            toggle.Label = toggle:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
-            toggle.Label:SetText(L.ADDON_ACRONYM)
-            toggle.Label:SetPoint("LEFT", toggle.Checkbox, "RIGHT", pad, 0)
-            toggle:SetScript("OnClick", function() toggle.Checkbox:Click() end)
-            toggle:SetScript("OnEnter", function() toggle.Checkbox:OnEnter() end)
-            toggle:SetScript("OnLeave", function() toggle.Checkbox:OnLeave() end)
-            toggle:SetWidth(toggle.Checkbox:GetWidth() + toggle.Label:GetWidth() + pad)
-            local onUpdateSetting = function(isGlobalDisabled)
-                Addon.PanelFrame:SetShown(not isGlobalDisabled)
-                Addon.PanelFrame.ToggleButton:SetShown(not isGlobalDisabled)
-                LFGListHookModule.UpdateResultList()
-            end
-            toggle.Checkbox:RegisterCallback("OnValueChanged", function(_, isChecked)
-                Addon.accountDB.GlobalDisable = not isChecked
-                onUpdateSetting(Addon.accountDB.GlobalDisable)
-            end)
-            toggle.Checkbox:Init(not Addon.accountDB.GlobalDisable)
-            onUpdateSetting(Addon.accountDB.GlobalDisable) -- match initial state
-            toggle:SetHeight(toggle.Checkbox:GetHeight())
-            toggle.Checkbox.HoverBackground:SetAlpha(0)
-            Addon.GlobalToggle = toggle
-        end
-        Addon.PanelFrame:SetParent(LFGBrowseFrame)
-        Addon.PanelFrame:ClearAllPoints()
-        Addon.PanelFrame:SetPoint("BOTTOMLEFT", LFGBrowseFrame, "BOTTOMRIGHT", -30, 76)
-        Addon.PanelFrame:SetShown(not Addon.accountDB.GlobalDisable)
-        local LFGParentFrameCloseButton do
-            for _, frame in ipairs({LFGParentFrame:GetChildren()}) do
-                if frame:GetObjectType() == "Button"
-                and frame:GetNormalTexture() -- find close button texture
-                and frame:GetNormalTexture():GetTextureFileID() == 130832 then
-                    LFGParentFrameCloseButton = frame
-                    break;
-                end
-            end
-        end
-        assert(LFGParentFrameCloseButton, "LFGParentFrameCloseButton not found")
-        Addon.PanelFrame.ToggleButton:SetParent(LFGBrowseFrame)
-        Addon.PanelFrame.ToggleButton:SetPoint("RIGHT", LFGParentFrameCloseButton, "LEFT", 10, 0)
-        Addon.PanelFrame.ToggleButton:SetSize(LFGParentFrameCloseButton:GetSize())
-        Addon.PanelFrame.ToggleButton:SetShown(not Addon.accountDB.GlobalDisable)
-        LFGListHookModule:Setup()
+    if isClassicEra and LFGBrowseFrame then
+        LFGListHookModule.AttachToGroupFinderUI()
     end
 end
 Addon.EFrame = EventFrame
