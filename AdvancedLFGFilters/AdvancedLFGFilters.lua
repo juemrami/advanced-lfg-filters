@@ -36,6 +36,7 @@ local LFG_ROLE_DISABLED_ATLAS = {
     ["HEALER"] = "UI-LFG-RoleIcon-Healer-Disabled",
     ["DPS"] = "UI-LFG-RoleIcon-DPS-Disabled",
 }
+local LFG_DISABLED_FONT_COLOR = CreateColor(0.3, 0.3, 0.3)
 local isPlayerHorde = UnitFactionGroup("player") == "Horde"
 local isClassicEra = WOW_PROJECT_ID == WOW_PROJECT_CLASSIC
 local isSeasonOfDiscovery = C_Seasons.GetActiveSeason() == Enum.SeasonID.SeasonOfDiscovery
@@ -117,7 +118,15 @@ local GetColoredClassNameByID = function(classID, useDisabledColor)
     local displayStr = color and color:WrapTextInColorCode(classInfo.className) or classInfo.className;
     return displayStr
 end
-
+local getDebouncedFunctionHandle = function(func, seconds)
+    local debounce;
+    local func = function(...) func(...); debounce = nil; end
+    return function(...)
+        if debounce then debounce:Cancel() end;
+        if select(1, ...) then debounce = C_Timer.NewTimer(seconds, GenerateClosure(func, ...));
+        else debounce = C_Timer.NewTimer(seconds, func) end;
+    end;
+end
 --- Inplace sort, Only using default blizzard one for now
 local SortLFGListResults = function(results)
     local sortFunc = LFGBrowseUtil_SortSearchResults;
@@ -128,9 +137,9 @@ end
 --------------------------------------------------------------------------------
 -- Connects the filters to react to updates to the LFGList UI, and attaches the filters panel UI
 
-local LFGListHookModule = {}
+local LFGListHookModule = { isInitialized = false }
 function LFGListHookModule.AttachToGroupFinderUI()
-    if not isClassicEra then return end
+    if not isClassicEra or LFGListHookModule.isInitialized then return end
     assert(Addon.PanelFrame and Addon.PanelFrame.ToggleButton, "Required Addon Frames not found", Addon)
     assert(LFGBrowseFrame.OptionsButton, "LFGBrowseFrame.OptionsButton not found")
     Addon.GlobalToggle:SetParent(LFGBrowseFrame)
@@ -179,9 +188,11 @@ function LFGListHookModule.AttachToGroupFinderUI()
                 end
             end
         end)
-        LFGListHookModule.SetupClassColorDataDisplays()
+        LFGListHookModule.SetupModifiedEntryFrames()
+        LFGListHookModule.isInitialized = true
     end
 end
+
 function LFGListHookModule.UpdateResultList(_, abortHookCallback)
     if Addon.accountDB.GlobalDisable then return end
     if abortHookCallback then return end
@@ -199,23 +210,220 @@ function LFGListHookModule.UpdateResultList(_, abortHookCallback)
     abortHookCallback = true; -- hack: important not to inf loop xD
     LFGBrowseFrame:UpdateResults(abortHookCallback)
 end
-function LFGListHookModule.RefreshScrollView()
-    -- call blizzards UpdateResultList to reset dataprovider/ui.
-    if LFGBrowseFrame then LFGBrowseFrame:UpdateResultList() end;
-end
 
-function LFGListHookModule.SetupClassColorDataDisplays()
+LFGListHookModule.RefreshScrollView = getDebouncedFunctionHandle(function()
+    -- call blizzards UpdateResultList to reset dataprovider/ui.
+    if not LFGListHookModule.isInitialized then return end
+    if LFGBrowseFrame then LFGBrowseFrame:UpdateResultList() end;
+end, 0) -- debounce calls within the same game tick
+
+function LFGListHookModule.SetupModifiedEntryFrames()
+    -- The way the addon is setup atm, we dont stop blizzard from updating the result list ui, instead we just listen for calls and do our work after.
+    local CLASS_ICON_ATLASES = {}
+    for _, classFile in ipairs(CLASS_FILE_BY_ID) do
+        CLASS_ICON_ATLASES[classFile] = "groupfinder-icon-class-"..string.lower(classFile);
+    end
+    local LVL_TEXT_PATTERN = (LEVEL_ABBR.." %d") -- LFD_LEVEL_FORMAT_SINGLE or (LEVEL_ABBR.." %d")
+    local ResultBGColorPresets = { blizzard = { 1, 1, 1, 0.02 }; addon = { 0.3, 0.3, 0.3, 0.275 }; }
+    local EntryFrameChildRegionBlizzAnchors = { ---@type {[frame]:{region: AnchorMixin[]}}
+        -- note: relativeTo can be `nil` to anchor to entry or a parentKey for a entry child region
+        ActivityName = { CreateAnchor("BOTTOMLEFT", nil, "BOTTOMLEFT", 10, 2) },
+        DataDisplay = { CreateAnchor("RIGHT", nil, "RIGHT", -2, -1) },
+        PartyIcon = { CreateAnchor("TOPLEFT", nil, "TOPLEFT", 8, -4) },
+        NewPlayerFriendlyIcon = { CreateAnchor("LEFT", "ClassIcon", "RIGHT", 8, -1) },
+        ClassIcon = { CreateAnchor("BOTTOMLEFT", "Level", "BOTTOMRIGHT", 3, -1) },
+        Level = { CreateAnchor("BOTTOMLEFT", "Name", "BOTTOMRIGHT", 4, -1) },
+    }
+    local fontStringPool = CreateUnsecuredFontStringPool(UIParent, "ARTWORK", nil, "GameFontNormalTiny")
+    local partyIconOffset = 18 - 1; -- iconSize - x offset from name
+    local listingNoteExactWidth = 150;
+    local nameFontStringWidth = 85;
+    local entryDefaultWidth = 312;
+    local listingNoteRightInset = entryDefaultWidth - listingNoteExactWidth;
+    local EntryNameWidthMatcher = {
+        registry = {}; current = 0; max = nameFontStringWidth;
+        Register = function(self, fontString)
+            local incoming = min(fontString:GetUnboundedStringWidth(), self.max)
+            if self.max then incoming = min(incoming, self.max) end
+            if incoming > self.current then self:UpdateWidths(incoming) end
+            self.registry[fontString] = true
+            fontString:SetWidth(self.current)
+        end,
+        UpdateWidths = function(self, width)
+            for frame, _ in pairs(self.registry) do frame:SetWidth(width) end
+            self.current = width
+        end,
+        Reset = function(self)
+            for frame, _ in pairs(self.registry) do self.registry[frame] = nil end
+            self.current = 0
+        end
+    }
+    local SoloPlayerLevelOffsetHandler = {
+        registry = {}; shouldOffset = false;
+        offset = partyIconOffset;
+        Register = function(self, region)
+            if not self.shouldOffset then self.registry[region] = true;
+            else self:UpdateRegion(region) end
+        end,
+        UnRegister = function(self, region) self.registry[region] = nil end,
+        EnableOffsets = function(self)
+            self.shouldOffset = true;
+            if not next(self.registry) then return end
+            for region, _ in pairs(self.registry) do self:UpdateRegion(region) end
+            self.registry = {}
+        end,
+        UpdateRegion = function(self, region) region:AdjustPointsOffset(self.offset, 0) end,
+        Reset = function(self) self.shouldOffset = false; self.registry = {} end,
+    }
+    --------------------------------------------------------------------------------
+    -- Entry frame modifications
+    --------------------------------------------------------------------------------
+    ---@class EntryModMixin: LFGBrowseSearchEntryTemplate
+    local EntryModMixin = {};
+    -- One time setups: anything that wont get modified by _Update (ours or blizzard). If unsure just put in Mixin.OnUpdate
+    function EntryModMixin:Init()
+        if Addon.accountDB.GlobalDisable then return end;
+        if self.ListingNote then return end;
+        self.ListingNote = fontStringPool:Acquire()
+        self.ListingNote:SetParent(self)
+        self.ListingNote:SetPoint("BOTTOMLEFT", 8, 1)
+        self.ListingNote:SetPoint("BOTTOMRIGHT", -listingNoteRightInset, 1)
+        self.ListingNote:SetAlpha(.9)
+        self.ListingNote:SetHeight(self.ActivityName:GetHeight())
+        self.ListingNote:SetMaxLines(1); self.ListingNote:SetJustifyH("LEFT")
+        -- center the class icon for applicants
+        self.ClassIcon:ClearAllPoints()
+        self.ClassIcon:SetPoint("LEFT", self.Level, "RIGHT", 5, 0)
+        -- make new player friendly icon less obtrusive
+        self.NewPlayerFriendlyIcon:SetScale(0.8)
+        -- move data display out of the middle to the topright (makes room for activityName)
+        self.DataDisplay:ClearAllPoints()
+        self.DataDisplay:SetPoint("TOPRIGHT", self, "TOPRIGHT", -2, -2)
+    end
+    function EntryModMixin:OnUpdate()
+        if not self.ListingNote then EntryModMixin.Init(self) end;
+        if self.DataDisplay.Comment:IsShown() then
+            -- use blizz-like layout for `Custom` category entries
+            EntryModMixin.Reset(self)
+            local r,g,b = NORMAL_FONT_COLOR:GetRGB()
+            self.DataDisplay.Comment:SetTextColor(r, g, b, .9)
+            return;
+        end
+        local resultData = C_LFGList.GetSearchResultInfo(self.resultID)
+        if not resultData then return end;
+        local isSolo = resultData.numMembers == 1
+        local leaderInfo = C_LFGList.GetSearchResultLeaderInfo(self.resultID)
+        if leaderInfo.level and leaderInfo.classFilename then
+            self.Level:SetText(LVL_TEXT_PATTERN:format(leaderInfo.level));
+            self.Level:Show()
+            self.Level:SetPoint("BOTTOMLEFT", self.Name, "BOTTOMRIGHT", 2, 0)
+            self.ClassIcon:SetAtlas(CLASS_ICON_ATLASES[leaderInfo.classFilename], false);
+            self.ClassIcon:Show()
+        end
+        self.NewPlayerFriendlyIcon:ClearAllPoints()
+        self.NewPlayerFriendlyIcon:SetPoint("RIGHT", self.DataDisplay.RoleCount.TankCount, "LEFT", 5, 0)
+        self.PartyIcon:ClearAllPoints()
+        self.ActivityName:ClearAllPoints()
+        local listingNote = resultData.comment
+        if listingNote and listingNote ~= "" then
+            self.ListingNote:Show()
+            self.ListingNote:SetText(listingNote)
+            self.PartyIcon:SetPoint("TOPLEFT", 8, -4)
+            self.ActivityName:SetPoint("BOTTOMLEFT", self, "BOTTOMRIGHT", -listingNoteRightInset + 4, 1)
+            self.ActivityName:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -5, 1)
+            self.ActivityName:SetJustifyH("RIGHT")
+        else
+            self.ListingNote:Hide()
+            self.ListingNote:SetText("")
+            self.PartyIcon:SetPoint("LEFT", 8, -1)
+            self.ActivityName:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -3, 1)
+            self.ActivityName:SetJustifyH("LEFT")
+        end
+        EntryNameWidthMatcher:Register(self.Name)
+        if isSolo then
+            SoloPlayerLevelOffsetHandler:Register(self.Level)
+        else
+            SoloPlayerLevelOffsetHandler:UnRegister(self.Level)
+            SoloPlayerLevelOffsetHandler:EnableOffsets()
+        end
+        self.ResultBG:SetColorTexture(unpack(resultData.isDelisted
+            and ResultBGColorPresets.blizzard or ResultBGColorPresets.addon
+        ))
+        self.ListingNote:SetTextColor((resultData.isDelisted
+            and LFG_DISABLED_FONT_COLOR or NORMAL_FONT_COLOR
+        ):GetRGB())
+    end
+    -- Called whenever a frame is released by the ScrollBoxView
+    function EntryModMixin:OnRelease(...) end
+    -- Reset to frame blizzard layout
+    -- note: some mods may be deferred to be laid out by blizzard in their _Update
+    function EntryModMixin:Reset()
+        if not self.ListingNote then return end
+        self.NewPlayerFriendlyIcon:ClearAllPoints()
+        self.NewPlayerFriendlyIcon:SetScale(1)
+        -- Restore the original texture anchors set by blizzard ui
+        for regionName, anchors in pairs(EntryFrameChildRegionBlizzAnchors) do
+            local region = self[regionName]
+            assert(region, "Region not found: ", regionName, self)
+            region:ClearAllPoints()
+            for _, anchor in ipairs(anchors) do
+                local relativeTo = (anchor.relativeTo and self[anchor.relativeTo]) or self
+                region:SetPoint(anchor.point, relativeTo,
+                    anchor.relativePoint,
+                    anchor.x or 0, anchor.y or 0
+                );
+            end
+        end
+        self.ResultBG:SetColorTexture(unpack(ResultBGColorPresets.blizzard))
+        self.ActivityName:SetJustifyH("LEFT")
+        fontStringPool:Release(self.ListingNote)
+        self.ListingNote = nil;
+    end
+    --------------------------------------------------------------------------------
+    -- Entry frame data display modifications
+    --------------------------------------------------------------------------------
     local SIMPLE_ROLE_ATLASES = {
         TANK = "groupfinder-icon-role-micro-tank",
         HEALER = "groupfinder-icon-role-micro-heal",
         DAMAGER = "groupfinder-icon-role-micro-dps",
     };
+    local ROLE_COUNT_REGION_PARENT_KEYS = {
+        "TankCount", "HealerCount", "DamagerCount", "TankIcon", "HealerIcon", "DamagerIcon"
+    };
     local ROLE_DISPLAY_ORDER = {"TANK", "HEALER", "DAMAGER"}
-    local CUSTOM_ICON_SIZE = 17.5
+    local CUSTOM_ICON_SIZE = 17
     local CUSTOM_ICON_ROLE_SIZE = CUSTOM_ICON_SIZE * 0.70
-    local DataDisplayPool = CreateFramePool("Frame", LFGBrowseFrame, nil, nil, nil,
-        function(display) -- Initializer (called when new frame created and added to pool)
-            local display = display; ---@class CustomDataDisplay: Frame
+    local ROLE_COUNT_DEFAULT_WIDTH = 17
+    local RIGHT_ICON_DEFAULT_INSET = 11
+    local RIGHT_ICON_MODDED_INSET = 6
+    local ROLES_TEXT_DEFAULT_INSET = 90
+    local ROLE_COUNT_ICON_X_OFFSET = 3
+    local ROLE_COUNT_2_DIGIT_WIDTH do
+        local fs = fontStringPool:Acquire() ---@type FontString
+        fs:SetFontObject("GameFontHighlightSmall"); fs:SetText("00");
+        ROLE_COUNT_2_DIGIT_WIDTH = ceil(fs:GetUnboundedStringWidth());
+        fontStringPool:Release(fs)
+    end
+
+    -- Reduces spacing between counts and role icons in the RoleCount data display.
+    ---@param display LFGListGroupDataDisplayTemplate
+    ---@param justifyH JustifyHorizontal
+    local modifyRoleCountDisplay = function(display, justifyH, countWidth, iconOffset)
+        for _, key in ipairs(ROLE_COUNT_REGION_PARENT_KEYS) do
+            local region = display.RoleCount[key]
+            -- assert(region, "RoleCount child region not found: ", key, display.RoleCount)
+            if key:find("Icon") then
+                if key ~= "DamagerIcon" then region:AdjustPointsOffset(iconOffset, 0) end;
+            else
+                region:SetWidth(countWidth)
+                region:SetJustifyH(justifyH)
+            end
+        end
+    end
+    -- Set up the `CustomEnumerate` data display frame for showing class colors
+    local CustomEnumeratePool = CreateFramePool("Frame", LFGBrowseFrame, nil, nil, nil,
+        function(display) -- creationFunc (called when new frame created and added to pool)
+            local display = display; ---@class CustomEnumerate: Frame
             display.Icons = {}
             for i = 1, 5 do
                 local Icon = CreateFrame("Frame", nil, display)
@@ -247,86 +455,144 @@ function LFGListHookModule.SetupClassColorDataDisplays()
                     classBg:SetAlpha(alpha ~= 1 and 0.2 or 1)
                 end
                 display.Icons[i] = Icon
-                if i == 1 then display.Icons[i]:SetPoint("RIGHT", -12, 0);
-                else display.Icons[i]:SetPoint("RIGHT", display.Icons[i-1], "LEFT", -0.25, 0) end;
+                if i == 1 then display.Icons[i]:SetPoint("RIGHT", -RIGHT_ICON_MODDED_INSET, 0);
+                else display.Icons[i]:SetPoint("RIGHT", display.Icons[i-1], "LEFT", -0.75, 0) end;
             end
             display:Hide()
         end
     );
-    local InitEntryWithCustomDataDisplay = function(entry, data)
-        if not (entry.DataDisplay and entry.DataDisplay.Enumerate)
-        or entry.CustomDataDisplay then return end;
-        local customDisplay = DataDisplayPool:Acquire();
-        customDisplay:SetParent(entry)
-        entry.CustomDataDisplay = customDisplay
+    ---@class DataDisplayModMixin: LFGListGroupDataDisplayTemplate
+    local DataDisplayModMixin = {};
+    function DataDisplayModMixin:Init()
+        local entry = self:GetParent() --[[@as LFGBrowseSearchEntryTemplate]]
+        assert(entry and entry.DataDisplay == self, "Parent entry frame for data display not found", self)
+        if self.CustomEnumerate then return end;
+        local CustomEnumerate = CustomEnumeratePool:Acquire();
+        CustomEnumerate:SetParent(entry)
+        CustomEnumerate:SetAllPoints(self.Enumerate)
+        modifyRoleCountDisplay(self, "RIGHT", ROLE_COUNT_2_DIGIT_WIDTH, ROLE_COUNT_ICON_X_OFFSET)
+        -- line up RoleCount with CustomEnumerate
+        self.RoleCount.DamagerIcon:SetPoint("RIGHT", -RIGHT_ICON_MODDED_INSET, 0)
+        -- line up Solo display. 48 = 3 * (16 width icons) | + right padding
+        self.Solo.RolesText:SetPoint("RIGHT", -(48 + RIGHT_ICON_MODDED_INSET + 8), 0)
+        self.CustomEnumerate = CustomEnumerate
     end
-    local OnEntryDataDisplayUpdate = function(display, displayType, maxNumPlayers, _, disabled, isSolo)
-        local entry = display:GetParent() ---@type Frame|{CustomDataDisplay: CustomDataDisplay}
-        if not entry.CustomDataDisplay then return;
-        else entry.CustomDataDisplay:Hide() end;
-        if Addon.accountDB.GlobalDisable then return end;
+    -- see: `Interface\AddOns\Blizzard_GroupFinder_VanillaStyle\Blizzard_LFGVanilla_Browse.lua:689`
+    -- for args
+    function DataDisplayModMixin:OnUpdate(displayType, maxNumPlayers, _, disabled, isSolo)
+        if not self.CustomEnumerate then return end;
+        self.CustomEnumerate:Hide()
+        local entry = self:GetParent() --[[@as LFGBrowseSearchEntryTemplate]]
         if not entry.resultID then return end;
-        if isSolo then return end;
-        if displayType ~= Enum.LFGListDisplayType.RoleEnumerate then return end;
-        if maxNumPlayers > 5 then return end; -- this is inferred by above check.
-        local resultData = C_LFGList.GetSearchResultInfo(entry.resultID);
-        if not resultData then return end;
-        entry.CustomDataDisplay:Show()
-        entry.DataDisplay.Enumerate:Hide() -- hide original
-        -- bugfix: anchor custom display on update, instead of on init
-        entry.CustomDataDisplay:SetAllPoints(display)
-        for i = 1, #entry.CustomDataDisplay.Icons do
-            if i > maxNumPlayers then entry.CustomDataDisplay.Icons[i]:Hide()
-            else
-                entry.CustomDataDisplay.Icons[i]:Show()
-                entry.CustomDataDisplay.Icons[i]:SetDesaturated(disabled)
-                entry.CustomDataDisplay.Icons[i]:SetAlpha(disabled and 0.5 or 1.0)
-            end
-        end
-        local numMembers = resultData.numMembers;
-        local displayData = {};--- {[lfgRole]: playerInfo[]}
-        for i = 1, numMembers do
-            local memberInfo = C_LFGList.GetSearchResultPlayerInfo(entry.resultID, i);
-            if memberInfo then
-                local role = memberInfo.assignedRole or "DAMAGER";
-                displayData[role] = displayData[role] or {};
-                tinsert(displayData[role], memberInfo);
-            end
-        end
-        --Note that icons are numbered from right (1) to left (5)
-        local iconIndex = maxNumPlayers; -- starts at leftmost icon
-        for roleIdx = 1, #ROLE_DISPLAY_ORDER do
-            local role = ROLE_DISPLAY_ORDER[roleIdx];
-            local numRolePlayers = displayData[role] and #displayData[role] or 0;
-            for i = 1, numRolePlayers do
-                local icon = entry.CustomDataDisplay.Icons[iconIndex];
-                icon:Show()
-                icon:SetRole(role)
-                local class = displayData[role][i].classFilename;
-                icon:SetClassColor(CLASS_ID_BY_FILE[class])
-                iconIndex = iconIndex - 1;
-                if ( iconIndex < 1 ) then
-                    return;
+        if isSolo then return end
+        if displayType == Enum.LFGListDisplayType.RoleEnumerate then
+            local resultData = C_LFGList.GetSearchResultInfo(entry.resultID);
+            if not resultData then return end;
+            self.CustomEnumerate:Show()
+            self.Enumerate:Hide() -- hide original
+            -- bugfix: anchor custom display on update, instead of on init
+            for i = 1, #self.CustomEnumerate.Icons do
+                if i > maxNumPlayers then self.CustomEnumerate.Icons[i]:Hide()
+                else
+                    self.CustomEnumerate.Icons[i]:Show()
+                    self.CustomEnumerate.Icons[i]:SetDesaturated(disabled)
+                    self.CustomEnumerate.Icons[i]:SetAlpha(disabled and 0.5 or 1.0)
                 end
             end
-        end
-        for i = 1, iconIndex do
-            entry.CustomDataDisplay.Icons[i]:SetEmptySlot()
+            local numMembers = resultData.numMembers;
+            local displayData = {};--- {[lfgRole]: playerInfo[]}
+            for i = 1, numMembers do
+                local memberInfo = C_LFGList.GetSearchResultPlayerInfo(entry.resultID, i);
+                if memberInfo then
+                    local role = memberInfo.assignedRole or "DAMAGER";
+                    displayData[role] = displayData[role] or {};
+                    tinsert(displayData[role], memberInfo);
+                end
+            end
+            --Note that icons are numbered from right (1) to left (5)
+            local iconIndex = maxNumPlayers; -- starts at leftmost icon
+            for roleIdx = 1, #ROLE_DISPLAY_ORDER do
+                local role = ROLE_DISPLAY_ORDER[roleIdx];
+                local numRolePlayers = displayData[role] and #displayData[role] or 0;
+                for i = 1, numRolePlayers do
+                    local icon =self.CustomEnumerate.Icons[iconIndex];
+                    icon:Show()
+                    icon:SetRole(role)
+                    local class = displayData[role][i].classFilename;
+                    icon:SetClassColor(CLASS_ID_BY_FILE[class])
+                    iconIndex = iconIndex - 1;
+                    if ( iconIndex < 1 ) then
+                        return;
+                    end
+                end
+            end
+            for i = 1, iconIndex do self.CustomEnumerate.Icons[i]:SetEmptySlot() end
         end
     end
-    local OnEntryFactoryFrameReset = function(...)
-        local _, frame = ...;
-        if frame.CustomDataDisplay then
-            DataDisplayPool:Release(frame.CustomDataDisplay)
-        end
-        -- also call the default factory resetter for the frame (req)
-        Pool_HideAndClearAnchors(...)
-
+    function DataDisplayModMixin:OnRelease() end
+    function DataDisplayModMixin:Reset()
+        if not self.CustomEnumerate then return end;
+        modifyRoleCountDisplay(self, "CENTER", ROLE_COUNT_DEFAULT_WIDTH, -ROLE_COUNT_ICON_X_OFFSET)
+        self.RoleCount.DamagerIcon:SetPoint("RIGHT", -RIGHT_ICON_DEFAULT_INSET, 0)
+        self.Solo.RolesText:SetPoint("RIGHT", -ROLES_TEXT_DEFAULT_INSET, 0)
+        CustomEnumeratePool:Release(self.CustomEnumerate)
+        self.CustomEnumerate = nil;
     end
-    hooksecurefunc("LFGBrowseSearchEntry_Init", InitEntryWithCustomDataDisplay)
-    -- Interface\AddOns\Blizzard_GroupFinder_VanillaStyle\Blizzard_LFGVanilla_Browse.lua:689
-    hooksecurefunc("LFGBrowseGroupDataDisplay_Update", OnEntryDataDisplayUpdate)
-    LFGBrowseFrame.ScrollBox:GetView():SetFrameFactoryResetter(OnEntryFactoryFrameReset)
+    local scrollBox = LFGBrowseFrame.ScrollBox ---@type ScrollBoxListMixin
+    local scrollView = scrollBox:GetView() ---@type ScrollBoxListViewMixin
+    local modifiedFrames = {}
+    -- local cbrOwner = Addon
+    -- local CallbackRegistry_OnReleasedFrame = function (_, frame, elementData)
+    --     if Addon.accountDB.GlobalDisable then return end;
+    --     EntryModMixin.OnRelease(frame, elementData)
+    -- end
+    local OnDataProviderReassigned = function(_, elementData)
+        -- if Addon.accountDB.GlobalDisable then return end;
+        EntryNameWidthMatcher:Reset()
+        SoloPlayerLevelOffsetHandler:Reset()
+    end
+    local OnUpdateFrame = function(frame)
+        if Addon.accountDB.GlobalDisable then return end;
+        if not modifiedFrames[frame] then
+            EntryModMixin.Init(frame)
+            modifiedFrames[frame] = true
+        end
+        EntryModMixin.OnUpdate(frame)
+    end
+    local OnUpdateFrameDataDisplay = function(display, ...)
+        if Addon.accountDB.GlobalDisable then return end;
+        if not display.CustomEnumerate then DataDisplayModMixin.Init(display) end;
+        DataDisplayModMixin.OnUpdate(display, ...)
+    end
+    scrollView:RegisterCallback("OnDataProviderReassigned", OnDataProviderReassigned)
+    -- scrollView:RegisterCallback("OnReleasedFrame", CallbackRegistry_OnReleasedFrame, cbrOwner)
+    hooksecurefunc("LFGBrowseSearchEntry_Update", OnUpdateFrame)
+    hooksecurefunc("LFGBrowseGroupDataDisplay_Update", OnUpdateFrameDataDisplay)
+    local defaultElementExtent = scrollView:GetElementExtent()
+    local scrollViewPadding = scrollView:GetPadding()
+    local onGlobalAddonToggle = function(_, isChecked)
+        local isAddonDisabled = not isChecked
+        if isAddonDisabled then
+            for frame, _ in pairs(modifiedFrames) do
+                -- EntryModMixin.OnRelease(frame) unused atm
+                EntryModMixin.Reset(frame)
+                DataDisplayModMixin.Reset(frame.DataDisplay)
+            end
+            wipe(modifiedFrames)
+            scrollView:SetElementExtent(defaultElementExtent)
+            scrollViewPadding:SetSpacing(0)
+            scrollViewPadding:SetTop(0)
+            EntryNameWidthMatcher:Reset()
+            SoloPlayerLevelOffsetHandler:Reset()
+        else
+            scrollView:SetElementExtent(defaultElementExtent + 2)
+            scrollViewPadding:SetSpacing(1)
+            scrollViewPadding:SetTop(4)
+        end
+        LFGListHookModule.RefreshScrollView()
+    end
+    Addon.GlobalToggle.Checkbox:RegisterCallback("OnValueChanged", onGlobalAddonToggle)
+    onGlobalAddonToggle(nil, Addon.GlobalToggle.Checkbox:GetChecked())
 end
 --------------------------------------------------------------------------------
 -- Filters Panel UI Toggle button
