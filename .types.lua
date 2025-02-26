@@ -1,0 +1,27 @@
+---@meta # custom lua typing for FrameXML/Blizzard Frames
+---@class LFGBrowseSearchEntryTemplate: Button
+---@field ResultBG Texture
+---@field PartyIcon Texture
+---@field Name FontString
+---@field Level FontString
+---@field ClassIcon Texture
+---@field NewPlayerFriendlyIcon Texture
+---@field ActivityName FontString
+---@field DataDisplay LFGListGroupDataDisplayTemplate
+---@field resultID number?
+---@field isDelisted boolean?
+
+---@class LFGListGroupDataDisplayTemplate: Frame
+---@field Comment FontString
+---@field Solo {RolesText:FontString, Role1: Texture, Role2: Texture, Role3: Texture}|Frame
+---@field RoleCount RoleCountNoScriptsTemplate
+---@field Enumerate {Icon1: Texture, Icon2: Texture, Icon3: Texture, Icon4: Texture, Icon5: Texture}|Frame
+---@field PlayerCount {Icon: Texture, Count: FontString}|Frame
+
+---@class RoleCountNoScriptsTemplate: Frame
+---@field DamagerIcon Texture
+---@field DamagerCount FontString
+---@field HealerIcon Texture
+---@field HealerCount FontString
+---@field TankIcon Texture
+---@field TankCount FontString
