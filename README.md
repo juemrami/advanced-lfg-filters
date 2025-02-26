@@ -2,7 +2,7 @@
 
 ## About
 
-This Addon aims to help navigate clunky & cluttered UI for the recently added Group Finder in classic era anniversary realms.
+This Addon adds various visual improvements and filtering options to the Group Finder in Classic Anniversary and Season of Discovery realms.
 
 ### Features:
 
@@ -15,11 +15,14 @@ This Addon aims to help navigate clunky & cluttered UI for the recently added Gr
     - Number of Healers
     - Number of DPS
 - Auto hide delisted entries
-- Class colored role icons
+- Visual improvements:
+    - Class Colored role icons
+    - Preview attached player note
+    - Lined up information layout (name, level, class)
 
 ### Images:
 
-![ui_image](https://github.com/user-attachments/assets/71da559a-cb65-4907-9fdf-5fb157caebe9)
+![ui_image](https://github.com/user-attachments/assets/7da5899b-9737-43d0-8dd7-ca609aabba01)
 
 
 *Inspired by retail's "Premade Group Filter" addon*
