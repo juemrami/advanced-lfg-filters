@@ -30,6 +30,8 @@ local CLASS_FILE_BY_ID = {
 local CLASS_ID_BY_FILE = tInvert(CLASS_FILE_BY_ID)
 local CHECKBOX_SIZE = 28
 local CLASS_FILTER_DROPDOWN_TAG = "ADV_LFG_CLASS_FILTER"
+local ACTIVITY_DROPDOWN_TAG = "ADV_LFG_ACTIVITY_FILTER"
+local CATEGORY_DROPDOWN_TAG = "ADV_LFG_CATEGORY_FILTER"
 local LFG_ROLE_ATLAS = {
 	["GUIDE"] = "UI-LFG-RoleIcon-Leader-Micro",
 	["TANK"] = "UI-LFG-RoleIcon-Tank-Micro",
@@ -194,6 +196,7 @@ function LFGListHookModule.AttachToGroupFinderUI()
             end
         end)
         LFGListHookModule.SetupModifiedEntryFrames()
+        LFGListHookModule.SetupModifiedDropdowns()
         LFGListHookModule.isInitialized = true
     end
 end
@@ -630,6 +633,394 @@ function LFGListHookModule.SetupModifiedEntryFrames()
             scrollViewPadding:SetTop(4)
         end
         LFGListHookModule.RefreshScrollView()
+    end
+    Addon.GlobalToggle.Checkbox:RegisterCallback("OnValueChanged", onGlobalAddonToggle)
+    onGlobalAddonToggle(nil, Addon.GlobalToggle.Checkbox:GetChecked())
+end
+
+function LFGListHookModule.SetupModifiedDropdowns()
+    if not isClassicEra then return end
+    local UIDropdownMenuButtonHeight = 16
+    local UIDropdownButtonHeight = 24
+    local BlizzardActivityDD = LFGBrowseFrame.ActivityDropDown;
+    local BlizzardCategoryDD = LFGBrowseFrame.CategoryDropDown;
+
+    local AddonCategoryDD = CreateFrame("DropdownButton",
+        (TOC_NAME.."CategoryDropdown"), LFGBrowseFrame, "WowStyle1DropdownTemplate"
+    );
+    -- DropdownSelectionTextMixin.OnLoad(AddonCategoryDD)
+
+    local AddonActivityDD = CreateFrame("DropdownButton",
+        (TOC_NAME.."ActivityDropdown"), LFGBrowseFrame, "WowStyle1DropdownTemplate"
+    );
+    Mixin(AddonActivityDD, DropdownSelectionTextMixin)
+    DropdownSelectionTextMixin.OnLoad(AddonActivityDD)
+    AddonActivityDD.ResetButton = CreateFrame("Button", nil, AddonActivityDD)
+    AddonActivityDD.ResetButton:SetNormalTexture("common-search-clearbutton")
+    AddonActivityDD.ResetButton:SetSize(13, 13)
+    AddonActivityDD.ResetButton:Hide();
+    AddonActivityDD.ResetButton:SetPoint("CENTER", AddonActivityDD, "TOPLEFT", 3, -2)
+    Mixin(AddonActivityDD, WowFilterButtonMixin)
+    WowFilterButtonMixin.OnLoad(AddonActivityDD)
+
+    ---@param dropdown DropdownButton? specifies a dropdown to refresh. If nil, refreshes both
+    local refreshAddonDropdowns = function(dropdown)
+        local dropdowns = dropdown and {dropdown} or {AddonCategoryDD, AddonActivityDD}
+        for _, dropdown in ipairs(dropdowns) do
+            -- note: i think `OnMenuResponse` might do this too
+            dropdown:GenerateMenu() -- refresh menu description
+            dropdown:SignalUpdate() -- update header button text
+        end
+    end
+    local selectedCategoryID = 0; -- 0 is a placeholder ID for None or Self Listings
+    -- Tracks selection state of ALL activities, regardless of availability or category
+    local selectedActivitiesCache = setmetatable({}, {
+        __index = function(self, key) rawset(self, key, false); return false end
+    });
+    -- Cached implementation of `LFGUtil_GetFilteredActivities` (avoids CVarCBR taint)
+    ---@type fun(category: number, group: number?): table
+    local getAvailableActivities do -- possibly called multiple times in the same frame
+        local cache = {}
+        getAvailableActivities = function(category, group)
+            if C_CVar.GetCVarBool("disableSuggestedLevelActivityFilter")
+            then return C_LFGList.GetAvailableActivities(category, group) end
+            local key = ("%s_%s"):format(tostring(category), group and tostring(group) or "")
+            if not cache[key] then
+                local activities = C_LFGList.GetAvailableActivities(category, group);
+                local activeEntryInfo = C_LFGList.GetActiveEntryInfo();
+                local playerLevel = UnitLevel("player");
+                local validActivities = {};
+                for _, activityID in ipairs(activities) do
+                    local activityInfo = C_LFGList.GetActivityInfoTable(activityID);
+                    local isActiveEntryActivity = activeEntryInfo and tContains(activeEntryInfo.activityIDs, activityID)
+                    local inLevelRange = (activityInfo.minLevelSuggestion > 0 and activityInfo.minLevelSuggestion <= playerLevel)
+                        and (activityInfo.maxLevelSuggestion == 0 or activityInfo.maxLevelSuggestion >= playerLevel)
+                    if isActiveEntryActivity or inLevelRange then
+                        tinsert(validActivities, activityID)
+                    end
+                end
+                cache[key] = validActivities
+            end
+            return cache[key];
+        end
+        local clearCache = function() _G.wipe(cache) end
+        EventFrame:RegisterEventCallback("LFG_LIST_AVAILABILITY_UPDATE", clearCache)
+        EventFrame:RegisterEventCallback("PLAYER_LEVEL_UP", clearCache)
+    end
+    -- Helper for getting the selected activities for the current selected lfg category
+    local getSelectedActivitiesArray = function()
+        local availableActivities = getAvailableActivities(selectedCategoryID)
+        local selected = {}
+        for _, activityID in ipairs(availableActivities) do
+            if selectedActivitiesCache[activityID] then tinsert(selected, activityID) end
+        end
+        return selected
+    end
+    -- ActivityID custom sort function
+    local Activity_SortByLevel do
+        local orderRules
+        if isSeasonOfDiscovery then
+            orderRules = { "minLevelSuggestion", "maxLevelSuggestion", "orderIndex", "maxNumPlayers", "fullName" }
+        else orderRules = { "maxNumPlayers", "minLevelSuggestion", "maxLevelSuggestion", "fullName" } end
+        Activity_SortByLevel  = function(aID, bID)
+            local aInfo, bInfo = C_LFGList.GetActivityInfoTable(aID), C_LFGList.GetActivityInfoTable(bID)
+            -- edge case: treat LBRS (812) as a 10m
+            if aID == 812 then aInfo.maxNumPlayers = 10 end; if bID == 812 then bInfo.maxNumPlayers = 10 end
+            -- edge case: order Cathedral (828) before RFD (806)
+            if (aID == 828 and bID == 806) or (aID == 806 and bID == 828) then return aID > bID end
+            for _, ruleKey in ipairs(orderRules) do
+                local aVal, bVal = aInfo[ruleKey], bInfo[ruleKey]
+                if aVal ~= bVal then return aVal < bVal end
+            end
+            return aID < bID
+        end
+    end
+    local LFGBrowse_DoSearch = function() -- reimplemented to avoid taint
+        if (not LFGBrowseFrame.searching) then
+            local categoryID = selectedCategoryID
+            if (categoryID > 0) then
+                local activityIDs =  getSelectedActivitiesArray()
+                -- If we have no activities selected in the filter, search for everything in this category.
+                if (#activityIDs == 0) then activityIDs = getAvailableActivities(categoryID) end;
+                local filter = 0;
+                local preferredFilters = 0;
+                local languageFilter = nil;
+                local searchCrossFactionListings = false;
+                local advancedFilter = nil;
+                C_LFGList.Search(categoryID, filter, preferredFilters, languageFilter, searchCrossFactionListings, advancedFilter, activityIDs);
+                LFGBrowseFrame.searching = true;
+                LFGBrowseFrame.searchFailed = false;
+                LFGBrowseFrame:UpdateResults();
+            end
+        end
+    end
+    --- Reimplemented version `LFGBrowseMixin.SearchActiveEntry` to not taint blizzard DD's
+    local updateToActiveEntry = function(skipSearch)
+        local activeEntry = C_LFGList.GetActiveEntryInfo()
+        if not activeEntry then return end
+        -- blizzard resets the activity selections with only the active entry ones
+        -- We will keep them instead and just add the ones for the active entry
+        local bestCategory = 0
+        for _, activityID in ipairs(activeEntry.activityIDs) do
+            selectedActivitiesCache[activityID] = true
+            if bestCategory == 0 then
+                local activityInfo = C_LFGList.GetActivityInfoTable(activityID)
+                bestCategory = activityInfo and activityInfo.categoryID or 0
+            end
+        end
+        if bestCategory > 0 then
+            selectedCategoryID = bestCategory
+            refreshAddonDropdowns()
+        end
+        if skipSearch == true then return end
+        LFGBrowse_DoSearch()
+    end
+    local setVisibleDropdowns = function(isAddonDisabled)
+        BlizzardActivityDD:SetShown(isAddonDisabled)
+        BlizzardCategoryDD:SetShown(isAddonDisabled)
+        AddonActivityDD:SetShown(not isAddonDisabled)
+        AddonCategoryDD:SetShown(not isAddonDisabled)
+    end
+    --------------------------------------------------------------------------------
+    -- Category Dropdown
+    --------------------------------------------------------------------------------
+
+    local isCategorySelected = function(categoryID) return selectedCategoryID == categoryID end
+    local onCategorySelected = function(categoryID)
+        selectedCategoryID = categoryID
+        refreshAddonDropdowns(AddonActivityDD)
+        LFGBrowse_DoSearch()
+    end
+    ---@param rootDescription RootMenuDescriptionProxy
+    local categoryDropdownMenuGenerator = function(_, rootDescription)
+        rootDescription:SetTag(CATEGORY_DROPDOWN_TAG)
+        local playerHasActiveEntry = C_LFGList.HasActiveEntryInfo()
+        local categories = C_LFGList.GetAvailableCategories()
+        local numCategories = #categories
+        if numCategories == 0 and not playerHasActiveEntry then
+            rootDescription:CreateRadio(NONE, isCategorySelected, onCategorySelected, 0)
+            return;
+        end
+        if playerHasActiveEntry then
+            rootDescription:CreateButton(LFG_SELF_LISTING, updateToActiveEntry)
+        end
+        for i = 1, numCategories do
+            local categoryID = categories[i]
+            local activities = getAvailableActivities(categoryID)
+            if #activities > 0 then
+                local info = C_LFGList.GetLfgCategoryInfo(categoryID)
+                rootDescription:CreateRadio(info.name, isCategorySelected, onCategorySelected, categoryID)
+            end
+        end
+        for _, desc in rootDescription:EnumerateElementDescriptions() do
+            -- reduce menu button font size and compact their size
+           desc:SetFinalInitializer(function(button)
+                button.fontString:SetFontObject("GameFontHighlightSmallLeft")
+                local left, right = nil, button.fontString:GetRight();
+                if button.leftTexture1 then
+                    left = button.leftTexture1:GetLeft()
+                else left = button.fontString:GetLeft() end
+                button:SetSize((right-left), UIDropdownMenuButtonHeight)
+            end)
+        end
+    end
+    AddonCategoryDD:SetDefaultText(CATEGORY)
+    AddonCategoryDD.Text:SetFontObject("GameFontHighlightSmallLeft")
+    AddonCategoryDD:SetPoint("BOTTOMLEFT", LFGBrowseFrame.ScrollBox, "TOPLEFT", 6, 9.5)
+    AddonCategoryDD:SetSize(115, UIDropdownButtonHeight)
+
+    AddonCategoryDD:SetupMenu(categoryDropdownMenuGenerator)
+    --------------------------------------------------------------------------------
+    -- Activity Dropdown
+    --------------------------------------------------------------------------------
+
+    ----- Menu Selection API
+    local isActivitySelected = function(activityID) return selectedActivitiesCache[activityID] end
+    local onActivitySelected = function(activityID)
+        selectedActivitiesCache[activityID] = not selectedActivitiesCache[activityID]
+        LFGBrowse_DoSearch()
+        return MenuResponse.Refresh
+    end
+    local isActivityGroupSelected = function(activityGroupID, override)
+        --- note: calls from the dropdown menu will not use override. only from `onActivityGroupSelected`.
+        local activitiesByGroup = override or LFGUtil_OrganizeActivitiesByActivityGroup(
+            getAvailableActivities(selectedCategoryID, activityGroupID)
+        );
+        --- return true if any activityID selected
+        for _, activityGroup in pairs(activitiesByGroup) do
+            for _, activityID in ipairs(activityGroup) do
+                if selectedActivitiesCache[activityID]
+                then return true end
+            end
+        end
+    end
+    local onActivityGroupSelected = function(activityGroupID)
+        local activitiesByGroup = LFGUtil_OrganizeActivitiesByActivityGroup(
+            getAvailableActivities(selectedCategoryID, activityGroupID)
+        );
+        local isAnySelected = isActivityGroupSelected(activityGroupID, activitiesByGroup)
+        for _, activityGroup in pairs(activitiesByGroup) do
+            for _, activityID in ipairs(activityGroup) do
+                selectedActivitiesCache[activityID] = not isAnySelected
+            end
+        end
+        LFGBrowse_DoSearch()
+        return MenuResponse.Refresh
+    end
+    ----- Menu Generator Setup
+    local formatMenuButton = function(button)
+        button.fontString:SetFontObject("GameFontHighlightSmallLeft")
+        local left, right = button.leftTexture1:GetLeft(), nil;
+        if button.arrow then-- button has submenu texture
+            button.arrow:AdjustPointsOffset(-5, 0)
+            right = button.arrow:GetRight();
+        else right = button.fontString:GetRight() end;
+        button:SetSize((right-left), UIDropdownMenuButtonHeight)
+    end
+    ---@param parentDesc ElementMenuDescriptionProxy|RootMenuDescriptionProxy
+    local addActivityButton = function(activityID, parentDesc, shouldIndent)
+        local activityInfo = C_LFGList.GetActivityInfoTable(activityID)
+        local activityName = LFGUtil_GetActivityInfoName(activityInfo)
+        if shouldIndent then
+           activityName = LFG_LIST_INDENT:format(activityName)
+        end
+        local description = parentDesc:CreateCheckbox(
+            activityName, isActivitySelected, onActivitySelected, activityID
+        );
+        description:SetFinalInitializer(formatMenuButton)
+        return description
+    end
+    local addActivityGroupButton = function(groupID, parentDesc)
+        local activityGroupName = C_LFGList.GetActivityGroupInfo(groupID)
+        if not activityGroupName
+        -- the "Custom" activity's groupID (0) will return a `nil` value for GetActivityGroupInfo
+        -- atm there is only one activityGroup for the related categoryID so we dont need to worry about-
+        -- a submenu for this activity group. It also only has a single activity ("Custom") so we can skip-
+        -- creating the usual "toggle all" button for single activity group categories
+        then return end;
+        local description = parentDesc:CreateCheckbox(
+            activityGroupName, isActivityGroupSelected, onActivityGroupSelected, groupID
+        );
+        description:SetFinalInitializer(formatMenuButton)
+        return description
+    end
+    ---@param rootDescription RootMenuDescriptionProxy
+    local activityDropdownMenuGenerator = function(_, rootDescription)
+        rootDescription:SetTag(ACTIVITY_DROPDOWN_TAG)
+        AddonActivityDD:SetEnabled(selectedCategoryID > 0)
+        local availableActivities = getAvailableActivities(selectedCategoryID)
+        if #availableActivities < 1 then AddonActivityDD:Disable(); return end
+        local activitiesByGroup = LFGUtil_OrganizeActivitiesByActivityGroup(availableActivities)
+        local activityGroups, numActivityGroups = {}, 0;
+        for groupID, _ in pairs(activitiesByGroup) do
+            tinsert(activityGroups, groupID); numActivityGroups = numActivityGroups + 1;
+        end
+        if numActivityGroups > 1 then
+            LFGUtil_SortActivityGroupIDs(activityGroups)
+            -- each activity group has a submenu with all activities
+            for _, groupID in ipairs(activityGroups) do
+                local groupDescription = addActivityGroupButton(groupID, rootDescription)
+                if groupDescription then -- this should always be true for this branch.
+                    table.sort(activitiesByGroup[groupID], Activity_SortByLevel)
+                    for _, activityID in ipairs(activitiesByGroup[groupID]) do
+                        addActivityButton(activityID, groupDescription) -- buttons added as submenus
+                    end
+                end
+            end
+        else
+            -- add an activityGroup "toggle all" as 1st button for non "Custom" activity groups
+            if activityGroups[1] > 0 then
+                addActivityGroupButton(activityGroups[1], rootDescription)
+            end
+            -- create activity filters (indented if a group toggle exists)
+            local shouldIndent = activityGroups[1] > 0
+            table.sort(availableActivities, Activity_SortByLevel)
+            for _, activityID in ipairs(availableActivities) do
+                addActivityButton(activityID, rootDescription, shouldIndent)
+            end
+        end
+    end
+    ----- Dropdown Button Header Text Setup
+    AddonActivityDD.Text:SetFontObject("GameFontHighlightSmallLeft")
+    AddonActivityDD:SetDefaultText(LFGBROWSE_ACTIVITY_HEADER_DEFAULT)
+    AddonActivityDD:SetSelectionText(function()
+        local selections = getSelectedActivitiesArray()
+        local count = #selections
+        if count > 1 then
+            return string.format(LFGBROWSE_ACTIVITY_HEADER, count)
+        elseif count == 1 then
+            local activityInfo = C_LFGList.GetActivityInfoTable(selections[1]);
+            return LFGUtil_GetActivityInfoName(activityInfo)
+        else
+            return LFGBROWSE_ACTIVITY_HEADER_DEFAULT
+        end
+    end)
+    ----- Setup filters "Reset" button
+    AddonActivityDD:SetDefaultCallback(function()
+        local availableActivities = getAvailableActivities(selectedCategoryID)
+        for _, activityID in ipairs(availableActivities) do
+            selectedActivitiesCache[activityID] = false
+        end
+        AddonActivityDD:SignalUpdate()
+    end);
+    AddonActivityDD:SetIsDefaultCallback(function()
+        local availableActivities = getAvailableActivities(selectedCategoryID)
+        for _, activityID in ipairs(availableActivities) do
+            if selectedActivitiesCache[activityID] then return false end
+        end
+        return true
+    end);
+    AddonActivityDD.ResetButton:HookScript("OnClick", LFGBrowse_DoSearch)
+    --- Position
+    AddonActivityDD:SetPoint("LEFT", AddonCategoryDD, "RIGHT", 5, 0)
+    AddonActivityDD:SetPoint("RIGHT", LFGBrowseFrame.RefreshButton, "LEFT", -1, 0)
+    AddonActivityDD:SetHeight(UIDropdownButtonHeight)
+
+    AddonActivityDD:SetupMenu(activityDropdownMenuGenerator) -- initialize
+    --------------------------------------------------------------------------------
+    -- Finalize Setup/Hacks and Hooks
+    --------------------------------------------------------------------------------
+
+    --- Add Hooks to refresh dropdown menu wherever blizzards dropdowns would be
+    EventFrame:RegisterEventCallback("LFG_LIST_AVAILABILITY_UPDATE", function()
+        if Addon.accountDB.GlobalDisable then return end
+        refreshAddonDropdowns()
+    end)
+    EventFrame:RegisterEventCallback("CVAR_UPDATE", function(_, name)
+        if Addon.accountDB.GlobalDisable then return end
+        if name == "disableSuggestedLevelActivityFilter" then
+            refreshAddonDropdowns(AddonActivityDD)
+        end
+    end)
+    hooksecurefunc("LFGBrowseCategoryButton_OnClick", function()
+        selectedCategoryID = BlizzardCategoryDD.selectedValue
+    end)
+    hooksecurefunc(LFGBrowseFrame, "SearchActiveEntry", function()
+        if Addon.accountDB.GlobalDisable then
+            -- just update value. menu will be refreshed on addon toggle callback
+            selectedCategoryID = BlizzardCategoryDD.selectedValue
+            return
+        end
+        updateToActiveEntry(true)
+    end)
+    hooksecurefunc(C_LFGList, "Search", function(categoryID, _, _, _, _, _, activityIDs)
+        selectedCategoryID = categoryID
+        if Addon.accountDB.GlobalDisable then return end
+        refreshAddonDropdowns()
+    end)
+    if C_LFGList.HasActiveEntryInfo() then updateToActiveEntry(true) end
+
+    --- Register features with the global toggle
+    local LFGBrowseRefreshButton_OnClick = LFGBrowseFrame.RefreshButton:GetScript("OnClick");
+    local onGlobalAddonToggle = function(_, isChecked)
+        local isAddonDisabled = not isChecked
+        if isAddonDisabled then
+            LFGBrowseFrame.RefreshButton:SetScript("OnClick", LFGBrowseRefreshButton_OnClick)
+        else
+            LFGBrowseFrame.RefreshButton:SetScript("OnClick", LFGBrowse_DoSearch)
+            refreshAddonDropdowns()
+        end
+        setVisibleDropdowns(isAddonDisabled)
     end
     Addon.GlobalToggle.Checkbox:RegisterCallback("OnValueChanged", onGlobalAddonToggle)
     onGlobalAddonToggle(nil, Addon.GlobalToggle.Checkbox:GetChecked())
