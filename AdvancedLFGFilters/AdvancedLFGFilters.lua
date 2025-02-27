@@ -4,6 +4,12 @@ local TOC_NAME,
 
 ---@class Addon_EventFrame: EventFrame
 local EventFrame = CreateFrame("EventFrame", TOC_NAME.."EventFrame", UIParent)
+EventFrame:SetUndefinedEventsAllowed(true)
+EventFrame:SetScript("OnEvent", EventFrame.TriggerEvent)
+function EventFrame:RegisterEventCallback(event, callback, owner)
+    EventFrame:RegisterEvent(event)
+    EventFrame:RegisterCallback(event, callback, owner or EventFrame)
+end
 
 local L = { -- todo: some actual translations for missing pre-localized strings
     SELECTED_CLASSES = "Selected Classes",
@@ -172,20 +178,16 @@ function LFGListHookModule.AttachToGroupFinderUI()
             if Addon.accountDB.GlobalDisable then return end
             LFGListHookModule.UpdateResultList(...)
         end)
-        EventFrame:RegisterEvent("LFG_LIST_SEARCH_RESULT_UPDATED")
-        EventFrame:HookScript("OnEvent", function(_, event, ...)
-            if event == "LFG_LIST_SEARCH_RESULT_UPDATED" then
-                if Addon.accountDB.GlobalDisable then return end
-                local resultID = ...
-                local result = C_LFGList.GetSearchResultInfo(resultID)
-                if result and result.isDelisted and Addon.accountDB.HideDelisted then
-                    --note: data provider can be nil after: failed search, update during a search, empty searches.
-                    local dataProvider = LFGBrowseFrame.ScrollBox:GetDataProvider()
-                    if not dataProvider then return end;
-                    dataProvider:RemoveByPredicate(function(data)
-                        return data.resultID == resultID
-                    end)
-                end
+        EventFrame:RegisterEventCallback("LFG_LIST_SEARCH_RESULT_UPDATED", function(_, resultID)
+            if Addon.accountDB.GlobalDisable then return end
+            local result = C_LFGList.GetSearchResultInfo(resultID)
+            if result and result.isDelisted and Addon.accountDB.HideDelisted then
+                --note: data provider can be nil after: failed search, update during a search, empty searches.
+                local dataProvider = LFGBrowseFrame.ScrollBox:GetDataProvider()
+                if not dataProvider then return end;
+                dataProvider:RemoveByPredicate(function(data)
+                    return data.resultID == resultID
+                end)
             end
         end)
         LFGListHookModule.SetupModifiedEntryFrames()
@@ -952,13 +954,10 @@ function Addon:ADDON_LOADED()
     self:InitSavedVars()
     self:InitUIPanel()
 end
-EventFrame:RegisterEvent("ADDON_LOADED")
-EventFrame:SetScript("OnEvent", function(_, event, addon)
-    if event == "ADDON_LOADED" then
-        if addon == TOC_NAME then return Addon:ADDON_LOADED() end
-        if addon == "Blizzard_GroupFinder_VanillaStyle" then
-            return Addon:InitUIPanel()
-        end
+EventFrame:RegisterEventCallback("ADDON_LOADED", function(_, addon)
+    if addon == TOC_NAME then return Addon:ADDON_LOADED() end
+    if addon == "Blizzard_GroupFinder_VanillaStyle" then
+        return Addon:InitUIPanel()
     end
 end)
 
