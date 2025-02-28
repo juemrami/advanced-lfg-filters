@@ -314,7 +314,7 @@ function LFGListHookModule.SetupModifiedEntryFrames()
         if not resultData then return end;
         local isSolo = resultData.numMembers == 1
         local leaderInfo = C_LFGList.GetSearchResultLeaderInfo(self.resultID)
-        if leaderInfo.level and leaderInfo.classFilename then
+        if leaderInfo and leaderInfo.level and leaderInfo.classFilename then
             self.Level:SetText(LVL_TEXT_PATTERN:format(leaderInfo.level));
             self.Level:Show()
             self.Level:SetPoint("BOTTOMLEFT", self.Name, "BOTTOMRIGHT", 2, 0)
