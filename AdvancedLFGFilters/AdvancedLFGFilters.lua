@@ -305,6 +305,7 @@ function LFGListHookModule.SetupModifiedEntryFrames()
         if self.DataDisplay.Comment:IsShown() then
             -- use blizz-like layout for `Custom` category entries
             EntryModMixin.Reset(self)
+            self.NewPlayerFriendlyIcon:SetPoint("LEFT", self.Name, "RIGHT", 2, 0)
             local r,g,b = NORMAL_FONT_COLOR:GetRGB()
             self.DataDisplay.Comment:SetTextColor(r, g, b, .9)
             return;
