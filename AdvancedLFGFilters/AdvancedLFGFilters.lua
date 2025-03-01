@@ -978,6 +978,53 @@ function LFGListHookModule.SetupModifiedDropdowns()
 
     AddonActivityDD:SetupMenu(activityDropdownMenuGenerator) -- initialize
     --------------------------------------------------------------------------------
+    -- Refresh Button Glow for stale searches
+    --------------------------------------------------------------------------------
+
+    --- Adds a glow to refresh button when last searched values don't match the current dd selections
+    local refreshGlowFrame = CreateFrame("Frame", nil, LFGBrowseFrame.RefreshButton)
+    refreshGlowFrame:SetAllPoints()
+    refreshGlowFrame:SetFrameLevel(LFGBrowseFrame.RefreshButton:GetFrameLevel())
+    do -- setup glow animation/textures
+        local glow = refreshGlowFrame:CreateTexture(nil, "OVERLAY") ---@type Texture
+        refreshGlowFrame.glow = glow
+        glow:SetDesaturated(true); glow:SetVertexColor(NORMAL_FONT_COLOR:GetRGB());
+        -- glow:SetVertexColor(1, 1,1, 1);
+        glow:SetAtlas("newplayertutorial-drag-slotgreen", true)
+        glow:SetPoint("TOPLEFT", -6, 5); glow:SetPoint("BOTTOMRIGHT", 4,-4);
+        glow:SetAlpha(0)
+        local alphaFrom, alphaTo = 0.2, 0.65;
+        local duration = 0.7
+        local fadeAnim = glow:CreateAnimationGroup()
+        fadeAnim:SetLooping("BOUNCE")
+        local alphaAnim = fadeAnim:CreateAnimation("Alpha")
+        alphaAnim:SetFromAlpha(alphaFrom); alphaAnim:SetToAlpha(alphaTo)
+        alphaAnim:SetDuration(duration); alphaAnim:SetSmoothing("IN_OUT")
+        local startAnimation = function() fadeAnim:Play() end
+        local stopAnimation = function() fadeAnim:Stop(); glow:SetAlpha(0) end
+        refreshGlowFrame.startAnimation = startAnimation
+        refreshGlowFrame.stopAnimation = stopAnimation
+        local lastSearchedActivities = {}
+        hooksecurefunc(C_LFGList, "Search", function(_, _, _, _, _, _, activityIDs)
+            lastSearchedActivities = activityIDs or {}
+            if Addon.accountDB.GlobalDisable then return end
+            stopAnimation();
+        end)
+        EventFrame:RegisterEventCallback("LFG_LIST_SEARCH_RESULTS_RECEIVED", function()
+            if Addon.accountDB.GlobalDisable then return end
+            if not next(lastSearchedActivities) then return end -- can be empty when externally updated
+            local selectedActivities = getSelectedActivitiesArray()
+            if not next(selectedActivities) then
+                selectedActivities = getAvailableActivities(selectedCategoryID);
+            end
+            local didSearchMatchSelectedFilters = tCompare(lastSearchedActivities, selectedActivities, 1)
+            if not didSearchMatchSelectedFilters then startAnimation() end
+        end)
+        EventFrame:RegisterEventCallback("LFG_LIST_SEARCH_FAILED", function()
+            if not Addon.accountDB.GlobalDisable then startAnimation() end
+        end)
+    end
+    --------------------------------------------------------------------------------
     -- Finalize Setup/Hacks and Hooks
     --------------------------------------------------------------------------------
 
@@ -1015,8 +1062,11 @@ function LFGListHookModule.SetupModifiedDropdowns()
     local onGlobalAddonToggle = function(_, isChecked)
         local isAddonDisabled = not isChecked
         if isAddonDisabled then
+            refreshGlowFrame.stopAnimation()
+            refreshGlowFrame:Hide()
             LFGBrowseFrame.RefreshButton:SetScript("OnClick", LFGBrowseRefreshButton_OnClick)
         else
+            refreshGlowFrame:Show()
             LFGBrowseFrame.RefreshButton:SetScript("OnClick", LFGBrowse_DoSearch)
             refreshAddonDropdowns()
         end
