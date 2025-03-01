@@ -380,6 +380,17 @@ function LFGListHookModule.SetupModifiedEntryFrames()
         fontStringPool:Release(self.ListingNote)
         self.ListingNote = nil;
     end
+
+    -- fix for `nil` resultInfo blizzard error. Occurs when event received just after `C_LFGList.Search`
+    hooksecurefunc("LFGBrowseSearchEntry_Init", function(entry)
+        local ModifiedEventHandler = function(self, event, resultID)
+            if event ~= "LFG_LIST_SEARCH_RESULT_UPDATED"
+            or self.resultID ~= resultID
+            or not C_LFGList.GetSearchResultInfo(resultID) then return;
+            else LFGBrowseSearchEntry_OnEvent(self, event, resultID) end;
+        end
+        entry:SetScript("OnEvent", ModifiedEventHandler)
+    end)
     --------------------------------------------------------------------------------
     -- Entry frame data display modifications
     --------------------------------------------------------------------------------
