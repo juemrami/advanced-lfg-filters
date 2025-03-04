@@ -110,6 +110,9 @@ local ShouldFilterForResultID = function(resultID)
 end
 
 local GetClassColor = function(classID)
+    assert(classID, "usage: GetClassColor(classID) or GetClassColor(classFile)")
+    if type(classID) == "string" then classID = CLASS_ID_BY_FILE[classID] end
+    assert(classID, "classID not found for classFile: ", CLASS_ID_BY_FILE)
     local classInfo = C_CreatureInfo.GetClassInfo(classID)
     assert(classInfo, "classInfo not found for classID: ", classID)
     return (CUSTOM_CLASS_COLORS and CUSTOM_CLASS_COLORS[classInfo.classFile])
@@ -315,6 +318,7 @@ function LFGListHookModule.SetupModifiedEntryFrames()
         local resultData = C_LFGList.GetSearchResultInfo(self.resultID)
         if not resultData then return end;
         local isSolo = resultData.numMembers == 1
+        local activityColor = GRAY_FONT_COLOR
         local leaderInfo = C_LFGList.GetSearchResultLeaderInfo(self.resultID)
         if leaderInfo and leaderInfo.level and leaderInfo.classFilename then
             self.Level:SetText(LVL_TEXT_PATTERN:format(leaderInfo.level));
@@ -349,12 +353,34 @@ function LFGListHookModule.SetupModifiedEntryFrames()
             SoloPlayerLevelOffsetHandler:UnRegister(self.Level)
             SoloPlayerLevelOffsetHandler:EnableOffsets()
         end
-        self.ResultBG:SetColorTexture(unpack(resultData.isDelisted
-            and ResultBGColorPresets.blizzard or ResultBGColorPresets.addon
-        ))
+        if not resultData.isDelisted then -- get correct activity color
+            if resultData.hasSelf then
+                activityColor = LIGHTGREEN_FONT_COLOR
+            elseif C_LFGList.HasActiveEntryInfo() then
+                local activeEntryInfo = C_LFGList.GetActiveEntryInfo()
+                for _, activityID in ipairs(activeEntryInfo.activityIDs) do
+                    if activityID == resultData.activityID then
+                        activityColor = BRIGHTBLUE_FONT_COLOR
+                        break;
+                    end
+                end
+            end
+        end
+        self.Level:SetTextColor((resultData.isDelisted
+            and LFG_DISABLED_FONT_COLOR or GRAY_FONT_COLOR
+        ):GetRGB())
+        self.Name:SetTextColor((resultData.isDelisted
+            and LFG_DISABLED_FONT_COLOR or GetClassColor(leaderInfo.classFilename)
+        ):GetRGB())
+        self.ActivityName:SetTextColor((resultData.isDelisted
+            and LFG_DISABLED_FONT_COLOR or activityColor
+        ):GetRGB())
         self.ListingNote:SetTextColor((resultData.isDelisted
             and LFG_DISABLED_FONT_COLOR or NORMAL_FONT_COLOR
         ):GetRGB())
+        self.ResultBG:SetColorTexture(unpack(resultData.isDelisted
+            and ResultBGColorPresets.blizzard or ResultBGColorPresets.addon
+        ))
     end
     -- Called whenever a frame is released by the ScrollBoxView
     function EntryModMixin:OnRelease(...) end
