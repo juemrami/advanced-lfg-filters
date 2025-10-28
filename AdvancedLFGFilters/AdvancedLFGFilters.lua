@@ -611,7 +611,13 @@ function LFGListHookModule.SetupModifiedEntryFrames()
     -- scrollView:RegisterCallback("OnReleasedFrame", CallbackRegistry_OnReleasedFrame, cbrOwner)
     hooksecurefunc("LFGBrowseSearchEntry_Update", OnUpdateFrame)
     hooksecurefunc("LFGBrowseGroupDataDisplay_Update", OnUpdateFrameDataDisplay)
-    local defaultElementExtent = scrollView:GetElementExtent()
+    local defaultElementExtent do
+        if scrollView:HasIdenticalElementExtent() then
+            defaultElementExtent = scrollView:GetIdenticalElementExtent()
+        else
+            defaultElementExtent = scrollView:GetElementExtent(1)
+        end
+    end
     local scrollViewPadding = scrollView:GetPadding()
     local onGlobalAddonToggle = function(_, isChecked)
         local isAddonDisabled = not isChecked
