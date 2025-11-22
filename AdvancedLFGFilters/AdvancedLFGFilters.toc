@@ -1,4 +1,4 @@
-## Interface: 11508
+## Interface: 11508, 20505
 ## Title: Advanced Group Finder Filters
 ## Notes: Additional filtering options for the new Blizzard Group Finder
 ## Version: @project-version@

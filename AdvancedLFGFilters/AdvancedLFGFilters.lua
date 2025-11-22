@@ -11,6 +11,17 @@ function EventFrame:RegisterEventCallback(event, callback, owner)
     EventFrame:RegisterCallback(event, callback, owner or EventFrame)
 end
 
+local Expansion = {
+    Classic = 1,
+    BurningCrusade = 2,
+    Wrath = 3,
+    Cataclysm = 4,
+    Mists = 5
+}
+local gameInterfaceVersion = select(4, GetBuildInfo())
+local currentInterfaceXpac = math.floor(gameInterfaceVersion / 10000) ---@type 1|2|3|4|5
+Expansion.Current = currentInterfaceXpac
+
 local L = { -- todo: some actual translations for missing pre-localized strings
     SELECTED_CLASSES = "Selected Classes",
     SHOW_APPLICANTS = "Show Applicants",
@@ -46,11 +57,7 @@ local LFG_ROLE_DISABLED_ATLAS = {
 }
 local LFG_DISABLED_FONT_COLOR = CreateColor(0.3, 0.3, 0.3)
 local isPlayerHorde = UnitFactionGroup("player") == "Horde"
-local isClassicEra = WOW_PROJECT_ID == WOW_PROJECT_CLASSIC
 local isSeasonOfDiscovery = C_Seasons.GetActiveSeason() == Enum.SeasonID.SeasonOfDiscovery
-local isBurningCrusade = WOW_PROJECT_ID == WOW_PROJECT_BURNING_CRUSADE_CLASSIC
-local isWrath = WOW_PROJECT_ID == WOW_PROJECT_WRATH_CLASSIC
-local isCataclysm = WOW_PROJECT_ID == WOW_PROJECT_CATACLYSM_CLASSIC
 
 local meetsSettingCountRequirements = function(setting, count)
     local min, max = setting.Minimum, setting.Maximum
@@ -150,7 +157,7 @@ end
 
 local LFGListHookModule = { isInitialized = false }
 function LFGListHookModule.AttachToGroupFinderUI()
-    if not isClassicEra or LFGListHookModule.isInitialized then return end
+    if Expansion.Current > Expansion.BurningCrusade or LFGListHookModule.isInitialized then return end
     assert(Addon.PanelFrame and Addon.PanelFrame.ToggleButton, "Required Addon Frames not found", Addon)
     assert(LFGBrowseFrame.OptionsButton, "LFGBrowseFrame.OptionsButton not found")
     Addon.GlobalToggle:SetParent(LFGBrowseFrame)
@@ -176,7 +183,7 @@ function LFGListHookModule.AttachToGroupFinderUI()
     Addon.PanelFrame.ToggleButton:SetShown(not Addon.accountDB.GlobalDisable)
 
     -- Hook results filtering callbacks to blizzard updates to the LFGList UI
-    if isClassicEra then
+    if Expansion.Current <= Expansion.BurningCrusade then
         --note: more accurate updates if we Hook UpdateResults instead of UpdateResultList.
         assert(LFGBrowseFrame.UpdateResults, "LFGBrowseFrame.UpdateResults not found")
         hooksecurefunc(LFGBrowseFrame, "UpdateResults", function(...)
@@ -645,11 +652,24 @@ function LFGListHookModule.SetupModifiedEntryFrames()
 end
 
 function LFGListHookModule.SetupModifiedDropdowns()
-    if not isClassicEra then return end
     local UIDropdownMenuButtonHeight = 16
     local UIDropdownButtonHeight = 24
-    local BlizzardActivityDD = LFGBrowseFrame.ActivityDropDown;
-    local BlizzardCategoryDD = LFGBrowseFrame.CategoryDropDown;
+    local BlizzardActivityDD, BlizzardCategoryDD, getBlizzardDDSelectedCategory do
+        -- note: classic era still used the older dropdown UI, dd frames are named different
+        if Expansion.Current == Expansion.Classic then
+            BlizzardActivityDD = LFGBrowseFrame.ActivityDropDown;
+            BlizzardCategoryDD = LFGBrowseFrame.CategoryDropDown;
+            getBlizzardDDSelectedCategory = function()
+                return BlizzardCategoryDD.selectedValue
+            end
+        else
+            BlizzardActivityDD = LFGBrowseFrame.ActivityDropdown;
+            BlizzardCategoryDD = LFGBrowseFrame.CategoryDropdown;
+            getBlizzardDDSelectedCategory = function()
+                return BlizzardCategoryDD.selectedCategoryID
+            end
+        end
+    end
 
     local AddonCategoryDD = CreateFrame("DropdownButton",
         (TOC_NAME.."CategoryDropdown"), LFGBrowseFrame, "WowStyle1DropdownTemplate"
@@ -1046,17 +1066,18 @@ function LFGListHookModule.SetupModifiedDropdowns()
         end
     end)
     hooksecurefunc("LFGBrowseCategoryButton_OnClick", function()
-        selectedCategoryID = BlizzardCategoryDD.selectedValue
+        selectedCategoryID = getBlizzardDDSelectedCategory()
     end)
     hooksecurefunc(LFGBrowseFrame, "SearchActiveEntry", function()
         if Addon.accountDB.GlobalDisable then
             -- just update value. menu will be refreshed on addon toggle callback
-            selectedCategoryID = BlizzardCategoryDD.selectedValue
+            selectedCategoryID = getBlizzardDDSelectedCategory()
             return
         end
         updateToActiveEntry(true)
     end)
     hooksecurefunc(C_LFGList, "Search", function(categoryID, _, _, _, _, _, activityIDs)
+        assert(categoryID, "C_LFGList.Search called without categoryID")
         selectedCategoryID = categoryID
         if Addon.accountDB.GlobalDisable then return end
         refreshAddonDropdowns()
@@ -1284,7 +1305,7 @@ function FiltersPanelMixin:Setup()
         setSelected, setAllSelected = hookWithUpdate(setSelected), hookWithUpdate(setAllSelected)
         local setupClassFilter = function(rootDescription, classInfo)
             if not classInfo then return; end
-            if isClassicEra
+            if Expansion.Current < Expansion.BurningCrusade
                 and ((not isPlayerHorde and classInfo.classFile == "SHAMAN")
                 or (isPlayerHorde and classInfo.classFile == "PALADIN"))
             then selectedIds[classInfo.classID] = nil; return; end
@@ -1569,7 +1590,8 @@ function Addon:InitUIPanel()
         globalToggle.Checkbox.HoverBackground:SetAlpha(0)
         panel.initialized = true
     end
-    if isClassicEra and LFGBrowseFrame then
+    -- Attach hooks to Group Finder UI for BC and earlier
+    if Expansion.Current <= Expansion.BurningCrusade and LFGBrowseFrame then
         LFGListHookModule.AttachToGroupFinderUI()
     end
 end
