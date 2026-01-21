@@ -203,7 +203,7 @@ function LFGListHookModule.AttachToGroupFinderUI()
             end
         end)
         LFGListHookModule.SetupModifiedEntryFrames()
-        LFGListHookModule.SetupModifiedDropdowns()
+        -- LFGListHookModule.SetupModifiedDropdowns()
         LFGListHookModule.isInitialized = true
     end
 end
